@@ -1,5 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { parseSpaces, parseTabs, type SpaceInfo, type TabInfo } from "./lib";
+import { agentOf, parseSpaces, parseTabs, type SpaceInfo, type TabInfo } from "./lib";
+
+/** Shell kinds: a shell tab is a plain shell, never an agent. */
+const SHELLS = new Set(["zsh", "sh", "bash", "fish", "dash", "ksh", "nu", "pwsh"]);
 
 export function loadTabs(): TabInfo[] {
   try {
@@ -32,5 +35,34 @@ export function loadAgents(): Map<string, string> {
     return agents;
   } catch {
     return new Map();
+  }
+}
+
+/**
+ * The target's agent kind, seeing through the shell wrapper hc reports for tabs that
+ * run an agent behind a login shell: a kind that is not a shell is used as is; a shell
+ * kind becomes the foreground program `hc get <addr>` names (`opencode`, …) when that
+ * is neither empty nor itself a shell. Any failure of `hc get` or unparseable JSON
+ * keeps the shell kind, so a plain shell is never mistaken for an agent.
+ */
+export function effectiveKind(agents: Map<string, string>, address: string): string | null {
+  const agent = agentOf(agents, address);
+  if (agent === null) return null;
+  if (!SHELLS.has(agent)) return agent;
+  return foregroundName(address) ?? agent;
+}
+
+/** The basename (lower case) of the foreground program `hc get <addr>` reports; null when it says nothing. */
+function foregroundName(address: string): string | null {
+  try {
+    const p = spawnSync("hc", ["get", address], { encoding: "utf8" });
+    if (p.status !== 0) return null;
+    const body = JSON.parse(p.stdout) as { foreground?: { name?: unknown } };
+    const name = body.foreground?.name;
+    if (typeof name !== "string") return null;
+    const base = name.split("/").pop()?.toLowerCase() ?? "";
+    return base === "" || SHELLS.has(base) ? null : base;
+  } catch {
+    return null; // hc get failed or its output is not JSON: the shell kind stands.
   }
 }

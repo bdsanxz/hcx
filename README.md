@@ -96,9 +96,12 @@ adds fields next to hc's own and keeps hc's fields and exit code as they are:
   reports no status, so nobody can tell (a shell or an opencode TUI).
 - `route`: `hcx` for the untagged footer send, `hc` for a tagged send, `hcx-raw` for
   `--no-footer`.
-- `agent`: the target's agent kind, from `hc ls` (`muse`, `claude-code`, `zsh`, …).
-- `note`: present when `delivered` is `null`, for example `target is an opencode TUI
-  or a shell; hc reports no turn status`.
+- `agent`: the target's agent kind. `hc ls` names it directly unless it reports a
+  shell, in which case the foreground program from `hc get` names it (`opencode`, …);
+  a plain shell keeps its shell kind (`zsh`, …).
+- `note`: present when `delivered` is `null`: `opencode reports no turn status` for an
+  opencode target, otherwise `target is an opencode TUI or a shell; hc reports no turn
+  status`.
 
 ```sh
 hcx send --json Vrax "check this"

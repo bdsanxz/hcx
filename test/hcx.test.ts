@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   HcxError,
   NO_STATUS_NOTE,
+  OPENCODE_NOTE,
   TERMINAL_COMMANDS,
   agentOf,
   checkModel,
@@ -221,6 +222,12 @@ describe("delivery fields", () => {
       route: "hcx",
       agent: "zsh",
       note: NO_STATUS_NOTE,
+    });
+    expect(deliveryFields({ started: null, status: null, turn: 0 }, "opencode", "hcx")).toEqual({
+      delivered: null,
+      route: "hcx",
+      agent: "opencode",
+      note: OPENCODE_NOTE,
     });
     expect(deliveryFields({}, null, "hcx-raw").note).toBe(NO_STATUS_NOTE);
   });

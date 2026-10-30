@@ -11,3 +11,4 @@ Every issue reported against `hcx` is logged here first, then worked. Newest las
 | 5 | 2026-10-31 | owner review | 0.1.2 | `hcx spawn` prints only free text, so a caller cannot parse the new tab's name, terminal, agent or space. | Fixed in 0.1.3 |
 | 6 | 2026-10-31 | owner request | 0.1.2 | `hcx send` always adds the sender footer, so it cannot send text as given to a plain shell or an opencode TUI, where the footer would be typed as a command. | Fixed in 0.1.3 |
 | 7 | 2026-10-31 | owner live test | 0.1.3 | `hcx spawn opencode --model vikey/no-such-model` is not refused: `session.switchModel` accepts any model and the read-back only echoes it, so the TUI opens on `no-such-model (unavailable)`. | Fixed in 0.1.4 |
+| 8 | 2026-10-31 | owner review | 0.1.4 | `hc` classifies an opencode tab as zsh, so hcx send reports agent zsh and the note says the target may be a shell. | Fixed in 0.1.5 |

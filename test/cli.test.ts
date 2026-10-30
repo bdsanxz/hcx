@@ -6,6 +6,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFil
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { NO_STATUS_NOTE, OPENCODE_NOTE } from "../src/lib";
 import { VERSION } from "../src/version";
 
 const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
@@ -21,6 +22,7 @@ const TABS = JSON.stringify({
         { id: "tab1", name: "Lead", terminals: [{ terminal: "t1", app: "claude-code" }] },
         { id: "tab2", name: "Mira", terminals: [{ terminal: "t5", app: "muse" }] },
         { id: "tab3", name: "Shell", terminals: [{ terminal: "t6", app: null }] },
+        { id: "tab4", name: "Bot", terminals: [{ terminal: "t7", app: null }] },
       ],
     },
   ],
@@ -31,6 +33,7 @@ const AGENTS = JSON.stringify({
     { address: "t1", agent: "claude-code" },
     { address: "t5", agent: "muse" },
     { address: "t6", agent: "zsh" },
+    { address: "t7", agent: "zsh" },
   ],
 });
 
@@ -139,10 +142,11 @@ describe("hcx send delivery status", () => {
     });
   });
 
-  test("a target that reports no status is unconfirmed, with a note", () => {
+  test("a real shell keeps its shell kind and the shell note", () => {
     const s = sandbox();
     s.answer("herdr.ls", { out: TABS });
     s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.get.t6", { out: '{"foreground":{"name":"zsh","argv":["zsh"],"pid":1}}\n' });
     s.answer("hc.send", { out: '{"started":null,"status":null,"turn":0}\n' });
 
     const r = s.run(["send", "--json", "Shell", "hello"]);
@@ -151,7 +155,67 @@ describe("hcx send delivery status", () => {
     expect(body.delivered).toBeNull();
     expect(body.route).toBe("hcx");
     expect(body.agent).toBe("zsh");
-    expect(body.note).toContain("hc reports no turn status");
+    expect(body.note).toBe(NO_STATUS_NOTE);
+    expect(s.call("hc", "get")?.args).toEqual(["get", "t6"]);
+  });
+
+  test("an opencode tab behind a shell wrapper is reported as opencode", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.get.t7", { out: '{"foreground":{"name":"opencode","argv":["opencode"],"pid":2}}\n' });
+    s.answer("hc.send", { out: '{"started":null,"status":null,"turn":0}\n' });
+
+    const r = s.run(["send", "--json", "Bot", "hello"]);
+    expect(r.code).toBe(0);
+    const body = JSON.parse(r.out);
+    expect(body.delivered).toBeNull();
+    expect(body.route).toBe("hcx");
+    expect(body.agent).toBe("opencode");
+    expect(body.note).toBe(OPENCODE_NOTE);
+    expect(s.call("hc", "get")?.args).toEqual(["get", "t7"]);
+  });
+
+  test("a non-shell agent is used as is, without asking hc get", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    // claude-code's foreground is a version string; it must never become the kind.
+    s.answer("hc.get.t1", { out: '{"foreground":{"name":"2.1.314","argv":["claude"],"pid":3}}\n' });
+    s.answer("hc.send", { out: '{"started":true,"status":"idle","turn":2}\n' });
+
+    const r = s.run(["send", "--json", "Lead", "hello"]);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toMatchObject({ delivered: true, route: "hcx", agent: "claude-code" });
+    expect(s.calls().some((c) => c.tool === "hc" && c.args[0] === "get")).toBe(false);
+  });
+
+  test("a failed hc get keeps the shell kind", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.get.t6", { err: '{"error":{"kind":"not_found","message":"no terminal \\"t6\\""}}\n', exit: 1 });
+    s.answer("hc.send", { out: '{"started":null,"status":null,"turn":0}\n' });
+
+    const r = s.run(["send", "--json", "Shell", "hello"]);
+    expect(r.code).toBe(0);
+    const body = JSON.parse(r.out);
+    expect(body.agent).toBe("zsh");
+    expect(body.note).toBe(NO_STATUS_NOTE);
+  });
+
+  test("unparseable hc get output keeps the shell kind", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.get.t6", { out: "not json at all\n" });
+    s.answer("hc.send", { out: '{"started":null,"status":null,"turn":0}\n' });
+
+    const r = s.run(["send", "--json", "Shell", "hello"]);
+    expect(r.code).toBe(0);
+    const body = JSON.parse(r.out);
+    expect(body.agent).toBe("zsh");
+    expect(body.note).toBe(NO_STATUS_NOTE);
   });
 
   test("the default output (piped) carries the fields too", () => {

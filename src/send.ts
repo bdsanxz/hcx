@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { loadAgents, loadTabs } from "./herdr";
-import { agentOf, deliveryFields, isAddress, isRecord, parseSend, resolveTarget, withFooter } from "./lib";
+import { effectiveKind, loadAgents, loadTabs } from "./herdr";
+import { deliveryFields, isAddress, isRecord, parseSend, resolveTarget, withFooter } from "./lib";
 import { runHc } from "./passthrough";
 
 export function send(args: string[]): number {
@@ -32,7 +32,7 @@ export function send(args: string[]): number {
     return p.status ?? 1;
   }
   const route = plan.raw ? "hcx-raw" : "hcx";
-  const fields = deliveryFields(result, agentOf(loadAgents(), address), route);
+  const fields = deliveryFields(result, effectiveKind(loadAgents(), address), route);
   console.log(JSON.stringify({ ...result, ...fields }));
   return 0;
 }

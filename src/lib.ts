@@ -284,7 +284,10 @@ export interface DeliveryFields {
   note?: string;
 }
 
-/** The note for a target that reports no status, so nobody can tell if it arrived. */
+/** The note for an opencode target that reports no status. */
+export const OPENCODE_NOTE = "opencode reports no turn status";
+
+/** The note for any other target that reports no status, so nobody can tell if it arrived. */
 export const NO_STATUS_NOTE = "target is an opencode TUI or a shell; hc reports no turn status";
 
 /**
@@ -294,7 +297,8 @@ export const NO_STATUS_NOTE = "target is an opencode TUI or a shell; hc reports 
 export function deliveryFields(result: unknown, agent: string | null, route: SendRoute): DeliveryFields {
   const started = isRecord(result) ? result.started : undefined;
   const delivered = typeof started === "boolean" ? started : null;
-  return delivered === null ? { delivered, route, agent, note: NO_STATUS_NOTE } : { delivered, route, agent };
+  if (delivered !== null) return { delivered, route, agent };
+  return { delivered, route, agent, note: agent === "opencode" ? OPENCODE_NOTE : NO_STATUS_NOTE };
 }
 
 /** The target's agent kind, from `hc ls`; null when it is not listed. */

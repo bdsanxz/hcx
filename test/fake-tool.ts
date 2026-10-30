@@ -25,6 +25,7 @@ function answer(name: string): number {
 if (tool === "hc") {
   const [command, ...rest] = args;
   if (command === "ls") process.exit(answer("hc.ls"));
+  if (command === "get") process.exit(answer(`hc.get.${rest[0]}`));
   if (command === "send") process.exit(answer("hc.send"));
   if (command === "kill" || command === "rm") process.exit(answer(`${command}.${rest[0]}`));
   if (command === "--version" || command === "-V") process.exit(answer("hc.version"));
