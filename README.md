@@ -137,15 +137,21 @@ once it is known, so you can reply with `hcx send <name> "..."`.
 ### OpenCode model
 
 `hcx spawn opencode` also takes `--model provider/model` and `--variant level`. With
-them, hcx creates a session in the folder, switches its model through OpenCode's
-background service, verifies the switch by reading `opencode api session.list`, and
-starts `opencode --session <id>` on it. It refuses, before a tab opens, when the model
-is unknown or the service is not running. Without `--model`, `opencode` starts as
-before.
+them, hcx first checks the model and the variant against the registry
+(`opencode api model.list`) and refuses, before any session or tab exists, when the
+model or variant is unknown or the model is disabled, or when the service is not
+running. It then creates a session in the folder, switches its model through
+OpenCode's background service, verifies the switch by reading
+`opencode api session.list`, and starts `opencode --session <id>` on it:
 
 ```sh
-hcx spawn opencode --model provider/model --variant high --name Audit
+hcx spawn opencode --model vikey/no-such-model
+# unknown opencode model "vikey/no-such-model"; run opencode and pick one with /models
+hcx spawn opencode --model vikey/deepseek-v4-flash --variant max
+# unknown variant "max" for vikey/deepseek-v4-flash; available: low, medium, high
 ```
+
+Without `--model`, `opencode` starts as before.
 
 ### JSON output
 

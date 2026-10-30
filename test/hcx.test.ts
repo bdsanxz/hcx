@@ -4,6 +4,7 @@ import {
   NO_STATUS_NOTE,
   TERMINAL_COMMANDS,
   agentOf,
+  checkModel,
   deliveryFields,
   firstPositional,
   isAddress,
@@ -305,6 +306,50 @@ describe("opencode model", () => {
     expect(sameModel(found, { providerID: "vikey", id: "deepseek-v4-flash", variant: "default" })).toBe(false);
     expect(sameModel(found, { providerID: "vikey", id: "other" })).toBe(false);
     expect(sameModel(found, { providerID: "other", id: "deepseek-v4-flash" })).toBe(false);
+  });
+  test("checkModel accepts a model that exists, with or without a variant", () => {
+    const list = {
+      data: [
+        { id: "deepseek-v4-flash", providerID: "vikey", enabled: true, variants: [{ id: "low" }, { id: "medium" }, { id: "high" }] },
+        { id: "deepseek-r1", providerID: "vikey", variants: [{ id: "base" }] },
+      ],
+    };
+    expect(checkModel(list, { providerID: "vikey", id: "deepseek-v4-flash", variant: "high" })).toEqual({ ok: true });
+    expect(checkModel(list, { providerID: "vikey", id: "deepseek-v4-flash" })).toEqual({ ok: true });
+    // A missing `enabled` field counts as available.
+    expect(checkModel(list, { providerID: "vikey", id: "deepseek-r1", variant: "base" })).toEqual({ ok: true });
+  });
+  test("checkModel refuses unknown models and providers, naming only what was asked", () => {
+    const list = { data: [{ id: "deepseek-v4-flash", providerID: "vikey", enabled: true, variants: [] }] };
+    expect(checkModel(list, { providerID: "vikey", id: "no-such-model" })).toEqual({
+      ok: false,
+      reason: 'unknown opencode model "vikey/no-such-model"; run opencode and pick one with /models',
+    });
+    expect(checkModel(list, { providerID: "nope", id: "deepseek-v4-flash" })).toEqual({
+      ok: false,
+      reason: 'unknown opencode model "nope/deepseek-v4-flash"; run opencode and pick one with /models',
+    });
+    expect(checkModel(null, { providerID: "vikey", id: "deepseek-v4-flash" }).ok).toBe(false);
+    expect(checkModel({}, { providerID: "vikey", id: "deepseek-v4-flash" }).ok).toBe(false);
+  });
+  test("checkModel refuses a disabled model", () => {
+    const list = { data: [{ id: "claude-sonnet-4", providerID: "anthropic", enabled: false, variants: [] }] };
+    expect(checkModel(list, { providerID: "anthropic", id: "claude-sonnet-4" })).toEqual({
+      ok: false,
+      reason: 'opencode model "anthropic/claude-sonnet-4" is disabled; run opencode and enable it first',
+    });
+  });
+  test("checkModel refuses an unknown variant and lists the valid ids", () => {
+    const list = { data: [{ id: "deepseek-v4-flash", providerID: "vikey", enabled: true, variants: [{ id: "low" }, { id: "medium" }, { id: "high" }] }] };
+    expect(checkModel(list, { providerID: "vikey", id: "deepseek-v4-flash", variant: "max" })).toEqual({
+      ok: false,
+      reason: 'unknown variant "max" for vikey/deepseek-v4-flash; available: low, medium, high',
+    });
+    const bare = { data: [{ id: "deepseek-r1", providerID: "vikey", variants: [] }] };
+    expect(checkModel(bare, { providerID: "vikey", id: "deepseek-r1", variant: "base" })).toEqual({
+      ok: false,
+      reason: 'unknown variant "base" for vikey/deepseek-r1; available: none',
+    });
   });
 });
 

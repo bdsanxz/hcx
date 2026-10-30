@@ -396,6 +396,39 @@ export function sameModel(found: SessionModel, expected: ModelSpec): boolean {
   return expected.variant === undefined || found.variant === expected.variant;
 }
 
+/** The verdict on a model from the `opencode api model.list` registry. */
+export type ModelCheck =
+  | { ok: true }
+  | { ok: false; reason: string };
+
+/**
+ * Whether the model registry holds `spec`: an entry whose `providerID` and `id` match,
+ * `enabled !== false`, and — when a variant was asked for — that variant among the
+ * entry's `variants[].id`. A variant's ids may be listed in the reason; nothing else
+ * from the registry ever reaches it, so no provider data beyond the spec leaks.
+ */
+export function checkModel(list: unknown, spec: ModelSpec): ModelCheck {
+  const asked = `${spec.providerID}/${spec.id}`;
+  const data = isRecord(list) && Array.isArray(list.data) ? list.data : [];
+  const entry = data.find((e) => isRecord(e) && e.providerID === spec.providerID && e.id === spec.id);
+  if (!isRecord(entry)) {
+    return { ok: false, reason: `unknown opencode model "${asked}"; run opencode and pick one with /models` };
+  }
+  if (entry.enabled === false) {
+    return { ok: false, reason: `opencode model "${asked}" is disabled; run opencode and enable it first` };
+  }
+  const variants = (Array.isArray(entry.variants) ? entry.variants : [])
+    .map((v) => (isRecord(v) && typeof v.id === "string" ? v.id : ""))
+    .filter((id) => id !== "");
+  if (spec.variant !== undefined && !variants.includes(spec.variant)) {
+    return {
+      ok: false,
+      reason: `unknown variant "${spec.variant}" for ${asked}; available: ${variants.join(", ") || "none"}`,
+    };
+  }
+  return { ok: true };
+}
+
 /** The tab already called `name` (any case), so spawn can refuse a duplicate before it opens anything. */
 export function nameTaken(name: string, tabs: TabInfo[]): TabInfo | undefined {
   return tabs.find((t) => t.name.toLowerCase() === name.toLowerCase());

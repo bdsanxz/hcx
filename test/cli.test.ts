@@ -224,9 +224,21 @@ describe("hcx send --no-footer", () => {
 describe("hcx spawn opencode --model", () => {
   const model = "vikey/deepseek-v4-flash";
 
+  // The fake model registry: fake ids only, no key-like fields, so nothing secret
+  // ever reaches the tests. A missing `enabled` counts as available.
+  const MODEL_LIST = JSON.stringify({
+    location: {},
+    data: [
+      { id: "deepseek-v4-flash", providerID: "vikey", enabled: true, variants: [{ id: "low" }, { id: "medium" }, { id: "high" }] },
+      { id: "claude-sonnet-4", providerID: "anthropic", enabled: false, variants: [] },
+      { id: "deepseek-r1", providerID: "vikey", variants: [{ id: "base" }] },
+    ],
+  });
+
   function ready(s: ReturnType<typeof sandbox>) {
     s.answer("herdr.ls", { out: TABS });
     s.answer("herdr.do", { out: '{"tab":"tab9","terminal":"t90"}\n' });
+    s.answer("opencode.model.list", { out: MODEL_LIST });
     s.answer("opencode.session.create", { out: '{"data":{"id":"ses_1"}}\n' });
     s.answer("opencode.session.switchModel", { out: "{}\n" });
     s.answer(
@@ -254,6 +266,12 @@ describe("hcx spawn opencode --model", () => {
       model,
       variant: "high",
     });
+
+    // The registry is consulted first, in the same folder, and nothing from it is printed.
+    const apiCalls = s.calls().filter((c) => c.tool === "opencode" && c.args[0] === "api");
+    const listed = apiCalls[0];
+    expect(listed?.args).toEqual(["api", "model.list"]);
+    expect(listed?.cwd).toBe(realpathSync(folder));
 
     const create = s.calls().find((c) => c.tool === "opencode" && c.args[1] === "session.create");
     expect(create?.args).toEqual([
@@ -299,12 +317,73 @@ describe("hcx spawn opencode --model", () => {
   test("refuses when the OpenCode service is not running, before opening a tab", () => {
     const s = sandbox();
     ready(s);
-    s.answer("opencode.session.create", { err: "connect ECONNREFUSED 127.0.0.1:49374\n", exit: 1 });
+    s.answer("opencode.model.list", { err: "connect ECONNREFUSED 127.0.0.1:49374\n", exit: 1 });
 
     const r = s.run(["spawn", "opencode", "--model", model, "--name", "Probe", "--folder", s.folder()]);
     expect(r.code).toBe(1);
     expect(r.err).toContain("check that OpenCode's background service is running");
+    expect(s.calls().some((c) => c.tool === "opencode" && c.args[1] === "session.create")).toBe(false);
     expect(s.call("herdr-app", "do")).toBeUndefined();
+  });
+
+  test("refuses an unknown model before any session or tab exists", () => {
+    const s = sandbox();
+    ready(s);
+
+    const r = s.run(["spawn", "opencode", "--model", "vikey/no-such-model", "--name", "Probe", "--folder", s.folder()]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('unknown opencode model "vikey/no-such-model"; run opencode and pick one with /models');
+    expect(s.calls().some((c) => c.tool === "opencode" && c.args[1] === "session.create")).toBe(false);
+    expect(s.call("herdr-app", "do")).toBeUndefined();
+  });
+
+  test("refuses an unknown provider", () => {
+    const s = sandbox();
+    ready(s);
+
+    const r = s.run(["spawn", "opencode", "--model", "nope/deepseek-v4-flash", "--name", "Probe", "--folder", s.folder()]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('unknown opencode model "nope/deepseek-v4-flash"');
+    expect(s.calls().some((c) => c.tool === "opencode" && c.args[1] === "session.create")).toBe(false);
+    expect(s.call("herdr-app", "do")).toBeUndefined();
+  });
+
+  test("refuses a disabled model", () => {
+    const s = sandbox();
+    ready(s);
+
+    const r = s.run(["spawn", "opencode", "--model", "anthropic/claude-sonnet-4", "--name", "Probe", "--folder", s.folder()]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain('opencode model "anthropic/claude-sonnet-4" is disabled');
+    expect(s.calls().some((c) => c.tool === "opencode" && c.args[1] === "session.create")).toBe(false);
+    expect(s.call("herdr-app", "do")).toBeUndefined();
+  });
+
+  test("refuses an unknown variant and lists the model's variant ids", () => {
+    const s = sandbox();
+    ready(s);
+
+    const r = s.run(["spawn", "opencode", "--model", model, "--variant", "max", "--name", "Probe", "--folder", s.folder()]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain(`unknown variant "max" for ${model}`);
+    expect(r.err).toContain("available: low, medium, high");
+    expect(s.calls().some((c) => c.tool === "opencode" && c.args[1] === "session.create")).toBe(false);
+    expect(s.call("herdr-app", "do")).toBeUndefined();
+  });
+
+  test("a variant is valid when the entry has no enabled field", () => {
+    const s = sandbox();
+    ready(s);
+    s.answer(
+      "opencode.session.list",
+      { out: '{"data":[{"id":"ses_1","model":{"providerID":"vikey","id":"deepseek-r1","variant":"base"}}]}\n' },
+    );
+
+    const r = s.run(["spawn", "opencode", "--model", "vikey/deepseek-r1", "--variant", "base", "--name", "Probe", "--folder", s.folder(), "--json"]);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toMatchObject({ model: "vikey/deepseek-r1", variant: "base" });
+    const created = s.calls().find((c) => c.tool === "opencode" && c.args[1] === "session.create");
+    expect(created).toBeDefined();
   });
 
   test("without --model the TUI starts unchanged", () => {
