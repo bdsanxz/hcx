@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { loadTabs } from "./herdr";
-import { HcxError, nameTaken, parseSpawn } from "./lib";
+import { loadSpaces, loadTabs } from "./herdr";
+import { HcxError, nameTaken, parseSpawn, pickSpace } from "./lib";
 
 /** Opens the agent in a tab of its own (`herdr-app do tab.new`), so it has no parent terminal. */
 export function spawn(args: string[]): number {
@@ -11,6 +11,9 @@ export function spawn(args: string[]): number {
     if (taken) throw new HcxError(`tab name "${plan.name}" is already used by ${taken.terminals[0] ?? "another tab"}; pick another --name`);
   }
   const doArgs = ["do", "tab.new", "--argv", JSON.stringify(plan.argv), "--folder", plan.folder ?? process.cwd()];
+  // Without --space the tab lands in the space of whoever runs hcx, not in whichever space is active.
+  const space = pickSpace(plan.space, process.env.HC_TERMINAL_ID, loadSpaces());
+  if (space) doArgs.push("--space", space);
   if (plan.name) doArgs.push("--name", plan.name);
   if (plan.task) doArgs.push("--task", plan.task);
 

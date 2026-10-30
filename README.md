@@ -87,7 +87,7 @@ with a footer that names the sender.
 ## `hcx spawn`
 
 ```sh
-hcx spawn <muse|pi|claude|opencode> [--name N] [--folder DIR] [--task TEXT] [agent flags...]
+hcx spawn <muse|pi|claude|opencode> [--name N] [--space S] [--folder DIR] [--task TEXT] [agent flags...]
 ```
 
 Start an agent in a tab of its own, in the current folder (or `--folder`). It goes
@@ -97,10 +97,13 @@ it.
 
 ```sh
 hcx spawn muse --yolo
+hcx spawn pi --space SWE   # open the tab in another space
 hcx spawn claude --dangerously-skip-permissions   # the singular spelling is accepted too
 hcx spawn opencode
 hcx spawn pi --task "review src/"
 ```
+
+The tab opens in the space of the terminal that runs `hcx spawn` (not whichever space is active); `--space` takes a space name or id to put it elsewhere.
 
 Tab names never repeat: `--name` is checked against every existing tab (any case) before anything opens, and a name already in use is refused (`tab name "Vrax" is already used by t10; pick another --name`). Without `--name`, the auto-naming mod gives the tab a name that is not in use.
 

@@ -27,7 +27,43 @@ export function parseTabs(ls: unknown): TabInfo[] {
   return tabs;
 }
 
+export interface SpaceInfo {
+  id: string;
+  name: string;
+  /** Every terminal address in the space. */
+  terminals: string[];
+}
+
+/** Reads the spaces out of the JSON printed by `herdr-app ls`. */
+export function parseSpaces(ls: unknown): SpaceInfo[] {
+  const spaces = (ls as { spaces?: unknown[] } | null)?.spaces ?? [];
+  return (spaces as { id?: string; name?: string; tabs?: { terminals?: { terminal: string }[] }[] }[])
+    .filter((s) => s.id)
+    .map((s) => ({
+      id: s.id!,
+      name: s.name ?? "",
+      terminals: (s.tabs ?? []).flatMap((t) => (t.terminals ?? []).map((x) => x.terminal)),
+    }));
+}
+
 export class HcxError extends Error {}
+
+/**
+ * The space a spawned tab opens in: `--space` (an id or a name, any case) when given,
+ * else the space of the calling terminal. Undefined when neither is known, so Herdr
+ * falls back to its active space.
+ */
+export function pickSpace(wanted: string | undefined, caller: string | undefined, spaces: SpaceInfo[]): string | undefined {
+  if (wanted) {
+    const byId = spaces.find((s) => s.id === wanted);
+    if (byId) return byId.id;
+    const hits = spaces.filter((s) => s.name.toLowerCase() === wanted.toLowerCase());
+    if (hits.length > 1) throw new HcxError(`space name "${wanted}" is ambiguous; use its id`);
+    if (hits.length === 0) throw new HcxError(`no space "${wanted}"; known: ${spaces.map((s) => s.name).join(", ")}`);
+    return hits[0].id;
+  }
+  return caller ? spaces.find((s) => s.terminals.includes(caller))?.id : undefined;
+}
 
 /** An address like `t7`, `t1b` or `machine/t7`; never a tab name. */
 export function isAddress(s: string): boolean {
@@ -226,6 +262,7 @@ export interface SpawnPlan {
   name?: string;
   folder?: string;
   task?: string;
+  space?: string;
 }
 
 /**
@@ -249,6 +286,7 @@ export function parseSpawn(args: string[]): SpawnPlan {
     if (a === "--name") plan.name = value(a, i++);
     else if (a === "--folder" || a === "-C") plan.folder = value(a, i++);
     else if (a === "--task") plan.task = value(a, i++);
+    else if (a === "--space") plan.space = value(a, i++);
     else plan.argv.push(FLAG_ALIASES[a] ?? a);
   }
   return plan;

@@ -8,7 +8,9 @@ import {
   needsTabLookup,
   parseSend,
   parseSpawn,
+  parseSpaces,
   parseTabs,
+  pickSpace,
   resolveArgs,
   resolveTarget,
   runArgs,
@@ -215,5 +217,34 @@ describe("nameTaken", () => {
   });
   test("is undefined for a free name", () => {
     expect(nameTaken("Kryx", tabs)).toBeUndefined();
+  });
+});
+
+describe("pickSpace", () => {
+  const spaces = parseSpaces({
+    spaces: [
+      { id: "spA", name: "SWE", tabs: [{ terminals: [{ terminal: "t3" }] }] },
+      { id: "spB", name: "squad", tabs: [{ terminals: [{ terminal: "t5w" }, { terminal: "t65" }] }] },
+    ],
+  });
+  test("--space by name (any case) or id", () => {
+    expect(pickSpace("swe", "t5w", spaces)).toBe("spA");
+    expect(pickSpace("spB", undefined, spaces)).toBe("spB");
+  });
+  test("defaults to the caller's space", () => {
+    expect(pickSpace(undefined, "t5w", spaces)).toBe("spB");
+    expect(pickSpace(undefined, "t3", spaces)).toBe("spA");
+  });
+  test("unknown caller leaves it to Herdr", () => {
+    expect(pickSpace(undefined, undefined, spaces)).toBeUndefined();
+    expect(pickSpace(undefined, "t99", spaces)).toBeUndefined();
+  });
+  test("unknown or ambiguous --space is an error", () => {
+    expect(() => pickSpace("nope", "t3", spaces)).toThrow(/no space/);
+    const dup = [...spaces, { id: "spC", name: "swe", terminals: [] }];
+    expect(() => pickSpace("SWE", undefined, dup)).toThrow(/ambiguous/);
+  });
+  test("parseSpawn reads --space", () => {
+    expect(parseSpawn(["pi", "--space", "SWE"]).space).toBe("SWE");
   });
 });
