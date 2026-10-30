@@ -1,7 +1,7 @@
 {
   "name": "hcx",
   "license": "Apache-2.0",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Herdr helper over hc: send to a terminal by tab name without the <hc from> tag, and spawn agents in their own tab.",
   "type": "module",
   "private": true,
