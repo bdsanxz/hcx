@@ -4,6 +4,53 @@ Helper over `hc` for Herdr: send messages without the `<hc from>` tag, spawn age
 their own tab, run with no parent by default, and reach terminals by **tab name**.
 Everything else is passed through to `hc` unchanged.
 
+## Install
+
+On macOS arm64 nothing extra is needed, it gets a standalone binary; on every
+other platform `hcx` runs with node (https://nodejs.org):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bdsanxz/hcx/main/install.sh | sh
+```
+
+This downloads `hcx` from the latest release and checks its SHA-256. It installs
+it as `~/.local/bin/hcx`. Options go after `sh -s --`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bdsanxz/hcx/main/install.sh | sh -s -- --version v0.1.0 --dir ~/bin
+```
+
+| Option | Environment variable | Default | Use |
+| --- | --- | --- | --- |
+| `--version vX.Y.Z` | `HCX_VERSION` | `latest` | The release to install. |
+| `--dir DIR` | `HCX_INSTALL_DIR` | `~/.local/bin` | Where the file goes. |
+| `--from-source` | | | Build from the release source with Bun instead of downloading it. |
+| `--force` | | | Replace the target even when it is a symlink (see below). |
+
+When the target is a symlink — for example `~/.local/bin/hcx` linked to a repo
+build by `bun run install:local` — the installer prints what it points to and
+stops unless `--force` is given.
+
+A private repository needs a token with read access: set `GITHUB_TOKEN`, or sign in with the GitHub CLI (`gh auth login`).
+
+### From source
+
+```bash
+git clone https://github.com/bdsanxz/hcx.git
+cd hcx
+bun install
+bun run build
+cp dist/hcx.js ~/.local/bin/hcx
+```
+
+Run `hcx --help` to check that it runs. No compile step: `dist/hcx.js` is `src/` bundled with `bun build` for node.
+
+### Uninstall
+
+```bash
+rm ~/.local/bin/hcx
+```
+
 ## Tab names
 
 Anywhere `hc` takes a `<terminal>` — `get`, `attach`, `read`, `kill`, `rm`, `label`,
@@ -84,7 +131,6 @@ passed straight to `hc` with inherited stdio, so output, stderr and exit code ar
 bun install
 bun run build         # dist/hcx.js (node bundle)
 bun run build:bin     # dist/hcx (standalone binary)
-bun run install:local # build the binary and link it at ~/.local/bin/hcx
 bun test && bun run typecheck
 ```
 
