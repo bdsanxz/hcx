@@ -1,0 +1,19 @@
+{
+  "name": "hcx",
+  "version": "0.1.0",
+  "description": "Herdr helper over hc: send to a terminal by tab name without the <hc from> tag, and spawn agents in their own tab.",
+  "type": "module",
+  "private": true,
+  "bin": { "hcx": "./dist/hcx.js" },
+  "scripts": {
+    "build": "bun build src/main.ts --outfile dist/hcx.js --target node --banner '#!/usr/bin/env node' && chmod +x dist/hcx.js",
+    "build:bin": "bun build src/main.ts --compile --outfile dist/hcx",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "install:local": "bun run build:bin && mkdir -p ~/.local/bin && ln -sf \"$PWD/dist/hcx\" ~/.local/bin/hcx"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.2"
+  }
+}
