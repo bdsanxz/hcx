@@ -48,6 +48,11 @@ export function parseSpaces(ls: unknown): SpaceInfo[] {
 
 export class HcxError extends Error {}
 
+/** A plain JSON object (not null, not an array). */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /**
  * The space a spawned tab opens in: `--space` (an id or a name, any case) when given,
  * else the space of the calling terminal. Undefined when neither is known, so Herdr
@@ -175,20 +180,26 @@ export interface SendPlan {
   text: string;
   /** `hc send` options, kept before the target. */
   flags: string[];
+  /** No sender footer and no `<hc from>` tag: the text goes exactly as given. */
+  raw: boolean;
 }
 
 const SEND_BOOLEAN_FLAGS = new Set(["--wait", "--force", "--json"]);
 const SEND_VALUE_FLAGS = new Set(["--if", "--timeout"]);
+/** hcx's own send flags: they change the text, so hc never sees them. */
+const SEND_RAW_FLAGS = new Set(["--no-footer", "--raw"]);
 
 /**
  * `<hc send flags...> <tab-name|tNN> <text...>`. Flags are accepted before the target
  * and before the text; once the text starts, every remaining argument is text.
+ * `--no-footer` (alias `--raw`) sends the text exactly as given.
  */
 export function parseSend(args: string[]): SendPlan {
   const flags: string[] = [];
   let target: string | undefined;
+  let raw = false;
   let i = 0;
-  const usage = 'usage: hcx send [--wait] [--force] [--json] [--if idle|working] [--timeout SECONDS] <tab-name|tNN> "text"';
+  const usage = 'usage: hcx send [--wait] [--force] [--json] [--if idle|working] [--timeout SECONDS] [--no-footer] <tab-name|tNN> "text"';
 
   while (i < args.length) {
     const arg = args[i];
@@ -200,6 +211,11 @@ export function parseSend(args: string[]): SendPlan {
     if (target === undefined) {
       if (arg === "-h" || arg === "--help") {
         flags.push(arg);
+        i++;
+        continue;
+      }
+      if (SEND_RAW_FLAGS.has(arg)) {
+        raw = true;
         i++;
         continue;
       }
@@ -221,6 +237,11 @@ export function parseSend(args: string[]): SendPlan {
         continue;
       }
       target = arg;
+      i++;
+      continue;
+    }
+    if (SEND_RAW_FLAGS.has(arg)) {
+      raw = true;
       i++;
       continue;
     }
@@ -247,7 +268,38 @@ export function parseSend(args: string[]): SendPlan {
   if (!target) throw new HcxError(usage);
   const text = args.slice(i).join(" ");
   if (!text) throw new HcxError(usage);
-  return { target, text, flags };
+  return { target, text, flags, raw };
+}
+
+/** How a message reached its target: `hcx` untagged, `hc` tagged, `hcx-raw` untagged as given. */
+export type SendRoute = "hcx" | "hc" | "hcx-raw";
+
+export interface DeliveryFields {
+  /** True or false when the target confirmed; null when it reports no status. */
+  delivered: boolean | null;
+  route: SendRoute;
+  /** The target's agent kind, from `hc ls`; null when it is not listed. */
+  agent: string | null;
+  /** Why delivery is unconfirmed. */
+  note?: string;
+}
+
+/** The note for a target that reports no status, so nobody can tell if it arrived. */
+export const NO_STATUS_NOTE = "target is an opencode TUI or a shell; hc reports no turn status";
+
+/**
+ * Explicit delivery fields for an `hc send` result. `started` is null exactly when the
+ * program reports no status, so `delivered` stays null there and a note explains it.
+ */
+export function deliveryFields(result: unknown, agent: string | null, route: SendRoute): DeliveryFields {
+  const started = isRecord(result) ? result.started : undefined;
+  const delivered = typeof started === "boolean" ? started : null;
+  return delivered === null ? { delivered, route, agent, note: NO_STATUS_NOTE } : { delivered, route, agent };
+}
+
+/** The target's agent kind, from `hc ls`; null when it is not listed. */
+export function agentOf(agents: Map<string, string>, address: string): string | null {
+  return agents.get(address) ?? null;
 }
 
 /** Agents `hcx spawn` knows, and the command each one runs. */
@@ -263,11 +315,18 @@ export interface SpawnPlan {
   folder?: string;
   task?: string;
   space?: string;
+  /** opencode only: the model to switch the new session to, `provider/model`. */
+  model?: string;
+  /** opencode only: the model variant, such as `high`. */
+  variant?: string;
+  /** Print one JSON object instead of the text line. */
+  json?: boolean;
 }
 
 /**
- * `<agent> [--name N] [--folder DIR] [--task TEXT] [agent flags...] [-- more agent flags]`.
- * Only those three options are hcx's own; every other flag goes to the agent.
+ * `<agent> [--name N] [--folder DIR] [--task TEXT] [--space S] [--json] [agent flags...]`.
+ * Only those are hcx's own; every other flag goes to the agent. For opencode, `--model`
+ * and `--variant` are hcx's own too, because they choose the session's model.
  */
 export function parseSpawn(args: string[]): SpawnPlan {
   const [agent, ...rest] = args;
@@ -287,9 +346,54 @@ export function parseSpawn(args: string[]): SpawnPlan {
     else if (a === "--folder" || a === "-C") plan.folder = value(a, i++);
     else if (a === "--task") plan.task = value(a, i++);
     else if (a === "--space") plan.space = value(a, i++);
+    else if (a === "--json") plan.json = true;
+    else if (agent === "opencode" && a === "--model") plan.model = value(a, i++);
+    else if (agent === "opencode" && a === "--variant") plan.variant = value(a, i++);
     else plan.argv.push(FLAG_ALIASES[a] ?? a);
   }
+  if (plan.variant && !plan.model) throw new HcxError("--variant needs --model");
   return plan;
+}
+
+/** `provider/model`, split at the first slash: model ids may contain one. */
+export function parseModel(spec: string): { providerID: string; id: string } {
+  const at = spec.indexOf("/");
+  if (at <= 0 || at === spec.length - 1) {
+    throw new HcxError(`--model needs provider/model, such as "provider/model"; got "${spec}"`);
+  }
+  return { providerID: spec.slice(0, at), id: spec.slice(at + 1) };
+}
+
+export interface ModelSpec {
+  providerID: string;
+  id: string;
+  variant?: string;
+}
+
+export interface SessionModel {
+  providerID: string;
+  id: string;
+  /** The session's variant, `default` when it reports none. */
+  variant: string;
+}
+
+/** The model a `session.list` entry reports; null when the session is not in the list. */
+export function sessionModel(listed: unknown, sessionID: string): SessionModel | null {
+  const data = isRecord(listed) && Array.isArray(listed.data) ? listed.data : [];
+  const entry = data.find((s) => isRecord(s) && s.id === sessionID);
+  if (!isRecord(entry)) return null;
+  const model = isRecord(entry.model) ? entry.model : {};
+  return {
+    providerID: typeof model.providerID === "string" ? model.providerID : "",
+    id: typeof model.id === "string" ? model.id : "",
+    variant: typeof model.variant === "string" ? model.variant : "default",
+  };
+}
+
+/** Whether the session reports the model that was asked for, and the variant when one was asked for. */
+export function sameModel(found: SessionModel, expected: ModelSpec): boolean {
+  if (found.providerID !== expected.providerID || found.id !== expected.id) return false;
+  return expected.variant === undefined || found.variant === expected.variant;
 }
 
 /** The tab already called `name` (any case), so spawn can refuse a duplicate before it opens anything. */

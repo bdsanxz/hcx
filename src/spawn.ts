@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { loadSpaces, loadTabs } from "./herdr";
 import { HcxError, nameTaken, parseSpawn, pickSpace } from "./lib";
+import { prepareOpencodeSession } from "./opencode";
 
 /** Opens the agent in a tab of its own (`herdr-app do tab.new`), so it has no parent terminal. */
 export function spawn(args: string[]): number {
@@ -10,7 +11,14 @@ export function spawn(args: string[]): number {
     const taken = nameTaken(plan.name, loadTabs());
     if (taken) throw new HcxError(`tab name "${plan.name}" is already used by ${taken.terminals[0] ?? "another tab"}; pick another --name`);
   }
-  const doArgs = ["do", "tab.new", "--argv", JSON.stringify(plan.argv), "--folder", plan.folder ?? process.cwd()];
+  const folder = plan.folder ?? process.cwd();
+  // OpenCode chooses the model before the tab opens, through its background service:
+  // create the session, switch it, verify it, then start the TUI on that session.
+  if (plan.agent === "opencode" && plan.model) {
+    const session = prepareOpencodeSession(folder, plan.name, plan.model, plan.variant);
+    plan.argv = ["opencode", "--session", session];
+  }
+  const doArgs = ["do", "tab.new", "--argv", JSON.stringify(plan.argv), "--folder", folder];
   // Without --space the tab lands in the space of whoever runs hcx, not in whichever space is active.
   const space = pickSpace(plan.space, process.env.HC_TERMINAL_ID, loadSpaces());
   if (space) doArgs.push("--space", space);
@@ -33,6 +41,20 @@ export function spawn(args: string[]): number {
     if (tab && !/^\d+$/.test(tab.name)) name = tab.name;
     else spawnSync("sleep", ["0.4"]);
   }
-  console.log(`spawned ${name || made.terminal} (${made.terminal}, ${plan.agent}) · message it: hcx send ${name || made.terminal} "..."`);
+  if (plan.json) {
+    console.log(
+      JSON.stringify({
+        name: name || made.terminal,
+        terminal: made.terminal,
+        agent: plan.agent,
+        space: space ?? null,
+        folder,
+        ...(plan.model ? { model: plan.model } : {}),
+        ...(plan.variant ? { variant: plan.variant } : {}),
+      }),
+    );
+  } else {
+    console.log(`spawned ${name || made.terminal} (${made.terminal}, ${plan.agent}) · message it: hcx send ${name || made.terminal} "..."`);
+  }
   return 0;
 }

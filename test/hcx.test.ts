@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
   HcxError,
+  NO_STATUS_NOTE,
   TERMINAL_COMMANDS,
+  agentOf,
+  deliveryFields,
   firstPositional,
   isAddress,
   nameTaken,
   needsTabLookup,
+  parseModel,
   parseSend,
   parseSpawn,
   parseSpaces,
@@ -14,7 +18,9 @@ import {
   resolveArgs,
   resolveTarget,
   runArgs,
+  sameModel,
   senderName,
+  sessionModel,
   withFooter,
 } from "../src/lib";
 
@@ -139,27 +145,44 @@ describe("runArgs", () => {
 
 describe("parseSend", () => {
   test("splits target and joins the rest as text", () => {
-    expect(parseSend(["Vrax", "hello"])).toEqual({ target: "Vrax", text: "hello", flags: [] });
-    expect(parseSend(["Vrax", "hello", "world"])).toEqual({ target: "Vrax", text: "hello world", flags: [] });
-    expect(parseSend(["Vrax", "Zytra"])).toEqual({ target: "Vrax", text: "Zytra", flags: [] });
+    expect(parseSend(["Vrax", "hello"])).toEqual({ target: "Vrax", text: "hello", flags: [], raw: false });
+    expect(parseSend(["Vrax", "hello", "world"])).toEqual({ target: "Vrax", text: "hello world", flags: [], raw: false });
+    expect(parseSend(["Vrax", "Zytra"])).toEqual({ target: "Vrax", text: "Zytra", flags: [], raw: false });
   });
   test("takes hc send flags before the text", () => {
-    expect(parseSend(["--wait", "--force", "Vrax", "hello"])).toEqual({ target: "Vrax", text: "hello", flags: ["--wait", "--force"] });
-    expect(parseSend(["Vrax", "--wait", "hello"])).toEqual({ target: "Vrax", text: "hello", flags: ["--wait"] });
+    expect(parseSend(["--wait", "--force", "Vrax", "hello"])).toEqual({ target: "Vrax", text: "hello", flags: ["--wait", "--force"], raw: false });
+    expect(parseSend(["Vrax", "--wait", "hello"])).toEqual({ target: "Vrax", text: "hello", flags: ["--wait"], raw: false });
     expect(parseSend(["--json", "--if", "idle", "--timeout", "30", "Vrax", "hello"])).toEqual({
       target: "Vrax",
       text: "hello",
       flags: ["--json", "--if", "idle", "--timeout", "30"],
+      raw: false,
     });
     expect(parseSend(["--if=working", "--timeout=5", "Vrax", "hello"])).toEqual({
       target: "Vrax",
       text: "hello",
       flags: ["--if=working", "--timeout=5"],
+      raw: false,
     });
   });
+  test("--no-footer and --raw are hcx's own flags, never hc's", () => {
+    expect(parseSend(["--no-footer", "Vrax", "hello"])).toEqual({ target: "Vrax", text: "hello", flags: [], raw: true });
+    expect(parseSend(["Vrax", "--raw", "hello"])).toEqual({ target: "Vrax", text: "hello", flags: [], raw: true });
+    expect(parseSend(["--raw", "--wait", "--if", "idle", "Vrax", "hello"])).toEqual({
+      target: "Vrax",
+      text: "hello",
+      flags: ["--wait", "--if", "idle"],
+      raw: true,
+    });
+    expect(parseSend(["--no-footer", "Vrax", "--", "--raw"])).toEqual({ target: "Vrax", text: "--raw", flags: [], raw: true });
+  });
+  test("keeps a footer-like line in the text exactly as given", () => {
+    const text = 'hello\n\n— from Fake · reply: hcx send Fake "..."';
+    expect(parseSend(["Vrax", "--no-footer", text])).toEqual({ target: "Vrax", text, flags: [], raw: true });
+  });
   test("-- starts the text so flag-like messages work", () => {
-    expect(parseSend(["Vrax", "--", "--wait"])).toEqual({ target: "Vrax", text: "--wait", flags: [] });
-    expect(parseSend(["--wait", "--", "Vrax", "--force"])).toEqual({ target: "Vrax", text: "--force", flags: ["--wait"] });
+    expect(parseSend(["Vrax", "--", "--wait"])).toEqual({ target: "Vrax", text: "--wait", flags: [], raw: false });
+    expect(parseSend(["--wait", "--", "Vrax", "--force"])).toEqual({ target: "Vrax", text: "--force", flags: ["--wait"], raw: false });
   });
   test("refuses missing targets, text and flag values", () => {
     expect(() => parseSend([])).toThrow(HcxError);
@@ -182,6 +205,36 @@ describe("footer", () => {
   });
 });
 
+describe("delivery fields", () => {
+  test("a target that reports status confirms delivery", () => {
+    expect(deliveryFields({ started: true, status: "idle", turn: 3 }, "muse", "hcx")).toEqual({
+      delivered: true,
+      route: "hcx",
+      agent: "muse",
+    });
+    expect(deliveryFields({ started: false, status: "working", turn: 3 }, "muse", "hcx").delivered).toBe(false);
+  });
+  test("no status leaves delivery unconfirmed, with a note", () => {
+    expect(deliveryFields({ started: null, status: null, turn: 0 }, "zsh", "hcx")).toEqual({
+      delivered: null,
+      route: "hcx",
+      agent: "zsh",
+      note: NO_STATUS_NOTE,
+    });
+    expect(deliveryFields({}, null, "hcx-raw").note).toBe(NO_STATUS_NOTE);
+  });
+  test("the route says how the message was sent", () => {
+    expect(deliveryFields({ started: true }, "muse", "hcx").route).toBe("hcx");
+    expect(deliveryFields({ started: true }, "muse", "hc").route).toBe("hc");
+    expect(deliveryFields({ started: true }, "muse", "hcx-raw").route).toBe("hcx-raw");
+  });
+  test("agentOf reads the target's kind from hc ls", () => {
+    const agents = new Map([["t10", "claude-code"]]);
+    expect(agentOf(agents, "t10")).toBe("claude-code");
+    expect(agentOf(agents, "t99")).toBeNull();
+  });
+});
+
 test("parseTabs survives missing data", () => {
   expect(parseTabs(null)).toEqual([]);
   expect(parseTabs({ spaces: [{}] })).toEqual([]);
@@ -200,6 +253,20 @@ describe("parseSpawn", () => {
     const plan = parseSpawn(["claude", "--name", "Audit", "-C", "/tmp/x", "--task", "check", "--model", "opus"]);
     expect(plan).toEqual({ agent: "claude", argv: ["claude", "--model", "opus"], name: "Audit", folder: "/tmp/x", task: "check" });
   });
+  test("opencode takes --model and --variant as hcx's own", () => {
+    const plan = parseSpawn(["opencode", "--model", "anthropic/x", "--variant", "high", "--name", "Probe", "--json"]);
+    expect(plan).toEqual({
+      agent: "opencode",
+      argv: ["opencode"],
+      name: "Probe",
+      model: "anthropic/x",
+      variant: "high",
+      json: true,
+    });
+  });
+  test("--variant needs --model", () => {
+    expect(() => parseSpawn(["opencode", "--variant", "high"])).toThrow(/--variant needs --model/);
+  });
   test("-- hands everything after it to the agent", () => {
     expect(parseSpawn(["muse", "--", "--name", "x"]).argv).toEqual(["muse", "--name", "x"]);
   });
@@ -207,6 +274,37 @@ describe("parseSpawn", () => {
     expect(() => parseSpawn(["gemini"])).toThrow(HcxError);
     expect(() => parseSpawn([])).toThrow(HcxError);
     expect(() => parseSpawn(["muse", "--name"])).toThrow(HcxError);
+    expect(() => parseSpawn(["opencode", "--model"])).toThrow(HcxError);
+  });
+});
+
+describe("opencode model", () => {
+  test("parseModel splits provider and model at the first slash", () => {
+    expect(parseModel("anthropic/claude-sonnet-4")).toEqual({ providerID: "anthropic", id: "claude-sonnet-4" });
+    expect(parseModel("openrouter/anthropic/claude-3.5")).toEqual({ providerID: "openrouter", id: "anthropic/claude-3.5" });
+  });
+  test("parseModel refuses a spec without a provider or a model", () => {
+    for (const spec of ["", "anthropic", "anthropic/", "/x"]) expect(() => parseModel(spec)).toThrow(HcxError);
+  });
+  test("sessionModel reads the session.list entry, defaulting the variant", () => {
+    const listed = {
+      data: [
+        { id: "ses_a", model: { providerID: "vikey", id: "deepseek-v4-flash", variant: "high" } },
+        { id: "ses_b", model: { providerID: "vikey", id: "deepseek-v4-flash" } },
+      ],
+    };
+    expect(sessionModel(listed, "ses_a")).toEqual({ providerID: "vikey", id: "deepseek-v4-flash", variant: "high" });
+    expect(sessionModel(listed, "ses_b")).toEqual({ providerID: "vikey", id: "deepseek-v4-flash", variant: "default" });
+    expect(sessionModel(listed, "ses_missing")).toBeNull();
+    expect(sessionModel(null, "ses_a")).toBeNull();
+  });
+  test("sameModel compares the model, and the variant when one was asked for", () => {
+    const found = { providerID: "vikey", id: "deepseek-v4-flash", variant: "high" };
+    expect(sameModel(found, { providerID: "vikey", id: "deepseek-v4-flash", variant: "high" })).toBe(true);
+    expect(sameModel(found, { providerID: "vikey", id: "deepseek-v4-flash" })).toBe(true);
+    expect(sameModel(found, { providerID: "vikey", id: "deepseek-v4-flash", variant: "default" })).toBe(false);
+    expect(sameModel(found, { providerID: "vikey", id: "other" })).toBe(false);
+    expect(sameModel(found, { providerID: "other", id: "deepseek-v4-flash" })).toBe(false);
   });
 });
 

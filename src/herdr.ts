@@ -18,3 +18,19 @@ export function loadSpaces(): SpaceInfo[] {
     return [];
   }
 }
+
+/** Terminal address → agent kind, from `hc ls --json`; empty when hc cannot answer. */
+export function loadAgents(): Map<string, string> {
+  try {
+    const p = spawnSync("hc", ["ls", "--json"], { encoding: "utf8" });
+    if (p.status !== 0) return new Map();
+    const list = JSON.parse(p.stdout) as { terminals?: { address?: unknown; agent?: unknown }[] };
+    const agents = new Map<string, string>();
+    for (const t of list.terminals ?? []) {
+      if (typeof t.address === "string" && typeof t.agent === "string") agents.set(t.address, t.agent);
+    }
+    return agents;
+  } catch {
+    return new Map();
+  }
+}

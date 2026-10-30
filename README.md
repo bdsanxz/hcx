@@ -68,7 +68,7 @@ agent terminal (or its first terminal when it has no agent).
 ## `hcx send`
 
 ```sh
-hcx send [--wait] [--force] [--json] [--if idle|working] [--timeout SECONDS] <tab-name|tNN> "text"
+hcx send [--wait] [--force] [--json] [--if idle|working] [--timeout SECONDS] [--no-footer] <tab-name|tNN> "text"
 ```
 
 Send a message to another terminal **without the `<hc from="…">` tag**, by tab name,
@@ -78,16 +78,39 @@ with a footer that names the sender.
   clears that variable before `hc send`. The cost: `hc wait` and `hc send --wait` no
   longer tie the reply turn to the sender.
 - The footer `— from <tab name> · reply: hcx send <tab name> "..."` is added when
-  `HC_TERMINAL_ID` is set. Don't send to a plain shell: it would run the footer as a
-  command.
+  `HC_TERMINAL_ID` is set. Don't send to a plain shell with it: it would run the footer
+  as a command. Use `--no-footer` there.
 - `hc send` flags go before the text: `--wait`, `--force`, `--json`, `--if <status>`,
   `--timeout <seconds>`. Use `--` if the message itself starts with a flag:
   `hcx send Vrax -- "--wait"`.
+- `--no-footer` (alias `--raw`) sends the text **exactly as given**: no footer and no
+  tag. It works for every target, including a plain shell or an opencode TUI, and
+  combines with the other flags: `hcx send --no-footer --if idle Vrax "echo hi"`.
+
+### Delivery status
+
+When hc prints JSON — with `--json`, or by default when stdout is piped — `hcx send`
+adds fields next to hc's own and keeps hc's fields and exit code as they are:
+
+- `delivered`: `true` or `false` when the target reported its status, `null` when it
+  reports no status, so nobody can tell (a shell or an opencode TUI).
+- `route`: `hcx` for the untagged footer send, `hc` for a tagged send, `hcx-raw` for
+  `--no-footer`.
+- `agent`: the target's agent kind, from `hc ls` (`muse`, `claude-code`, `zsh`, …).
+- `note`: present when `delivered` is `null`, for example `target is an opencode TUI
+  or a shell; hc reports no turn status`.
+
+```sh
+hcx send --json Vrax "check this"
+{"status":"idle","turn":4,"started":true,"delivered":true,"route":"hcx","agent":"muse"}
+```
+
+In a terminal, without `--json`, the human line stays hc's own.
 
 ## `hcx spawn`
 
 ```sh
-hcx spawn <muse|pi|claude|opencode> [--name N] [--space S] [--folder DIR] [--task TEXT] [agent flags...]
+hcx spawn <muse|pi|claude|opencode> [--name N] [--space S] [--folder DIR] [--task TEXT] [--json] [agent flags...]
 ```
 
 Start an agent in a tab of its own, in the current folder (or `--folder`). It goes
@@ -107,9 +130,42 @@ The tab opens in the space of the terminal that runs `hcx spawn` (not whichever 
 
 Tab names never repeat: `--name` is checked against every existing tab (any case) before anything opens, and a name already in use is refused (`tab name "Vrax" is already used by t10; pick another --name`). Without `--name`, the auto-naming mod gives the tab a name that is not in use.
 
-Only `--name`, `--folder` (`-C`) and `--task` are hcx's own; every other flag goes to
-the agent, and `--` forces the rest to the agent. Prints the tab name once it is known,
-so you can reply with `hcx send <name> "..."`.
+Only `--name`, `--space`, `--folder` (`-C`), `--task` and `--json` are hcx's own; every
+other flag goes to the agent, and `--` forces the rest to the agent. Prints the tab name
+once it is known, so you can reply with `hcx send <name> "..."`.
+
+### OpenCode model
+
+`hcx spawn opencode` also takes `--model provider/model` and `--variant level`. With
+them, hcx creates a session in the folder, switches its model through OpenCode's
+background service, verifies the switch by reading `opencode api session.list`, and
+starts `opencode --session <id>` on it. It refuses, before a tab opens, when the model
+is unknown or the service is not running. Without `--model`, `opencode` starts as
+before.
+
+```sh
+hcx spawn opencode --model provider/model --variant high --name Audit
+```
+
+### JSON output
+
+`--json` prints one object instead of the text line: `name`, `terminal`, `agent`,
+`space`, `folder`, plus `model` and `variant` when they were given.
+
+```sh
+hcx spawn muse --name Review --json
+{"name":"Review","terminal":"t7","agent":"muse","space":"spA","folder":"/repo"}
+```
+
+## `hcx done`
+
+```sh
+hcx done <tab>...
+```
+
+Kill each named terminal's program, then remove the terminal. One line per tab
+(`done Mira (t5)`). A tab whose program already finished is still removed; an unknown
+tab is reported on stderr and the other tabs still go. Exits 1 when any tab failed.
 
 ## `hcx run`
 
@@ -123,10 +179,11 @@ terminal's parent; pass `--parent t10` explicitly when you want one.
 
 ## Everything else
 
-`hcx` with no arguments or `--help` prints hcx's own help. Every other command is
-passed straight to `hc` with inherited stdio, so output, stderr and exit code are
-`hc`'s own — including unknown commands (`hcx command-unknown` shows hc's error) and
-`hcx --version`, `hcx --licenses`, `hcx ls --json`.
+`hcx` with no arguments or `--help` prints hcx's own help. `hcx --version` (`-V`)
+prints `hcx <version>` on the first line and `hc <version>` on the second. Every other
+command is passed straight to `hc` with inherited stdio, so output, stderr and exit
+code are `hc`'s own — including unknown commands (`hcx command-unknown` shows hc's
+error) and `hcx --licenses`, `hcx ls --json`.
 
 ## Build
 
