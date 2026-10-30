@@ -87,3 +87,7 @@ bun run build:bin     # dist/hcx (standalone binary)
 bun run install:local # build the binary and link it at ~/.local/bin/hcx
 bun test && bun run typecheck
 ```
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).
