@@ -10,6 +10,7 @@ import {
   NOT_STARTED_NOTE,
   NO_STATUS_NOTE,
   OPENCODE_NOTE,
+  QODER_NOTE,
   SEND_TIMEOUT_MS,
   TERMINAL_COMMANDS,
   agentOf,
@@ -355,6 +356,12 @@ describe("delivery fields", () => {
       route: "hcx",
       agent: "opencode",
       note: OPENCODE_NOTE,
+    });
+    expect(deliveryFields({ started: null, status: null, turn: 0 }, "qoder", "hcx")).toEqual({
+      delivered: null,
+      route: "hcx",
+      agent: "qoder",
+      note: QODER_NOTE,
     });
     expect(deliveryFields({}, null, "hcx-raw").note).toBe(NO_STATUS_NOTE);
     expect(deliveryFields({}, "muse", "hcx").note).toBe(NO_STATUS_NOTE);

@@ -6,7 +6,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, unlinkSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { NO_STATUS_NOTE, OPENCODE_NOTE } from "../src/lib";
+import { OPENCODE_NOTE, QODER_NOTE } from "../src/lib";
 import { VERSION } from "../src/version";
 
 const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
@@ -233,7 +233,7 @@ describe("hcx send delivery status", () => {
     expect(body.delivered).toBeNull();
     expect(body.route).toBe("hcx");
     expect(body.agent).toBe("qoder");
-    expect(body.note).toBe(NO_STATUS_NOTE);
+    expect(body.note).toBe(QODER_NOTE);
     expect(s.call("hc", "get")?.args).toEqual(["get", "t7"]);
   });
 

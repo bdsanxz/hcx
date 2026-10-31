@@ -372,6 +372,9 @@ export interface DeliveryFields {
 /** The note for an opencode target that reports no status. */
 export const OPENCODE_NOTE = "opencode reports no turn status";
 
+/** The note for a qoder target that reports no status. */
+export const QODER_NOTE = "qoder reports no turn status";
+
 /**
  * The note when nothing about the target is known, so nobody can tell if it arrived.
  * When the kind is known the note names it instead (see `shellNote`).
@@ -415,7 +418,14 @@ export function deliveryFields(
       ? { delivered, route, agent, ...extra }
       : { delivered, route, agent, ...extra, note: NOT_STARTED_NOTE };
   }
-  const note = agent === "opencode" ? OPENCODE_NOTE : agent && isShellKind(agent) ? shellNote(agent) : NO_STATUS_NOTE;
+  const note =
+    agent === "opencode"
+      ? OPENCODE_NOTE
+      : agent === "qoder"
+        ? QODER_NOTE
+        : agent && isShellKind(agent)
+          ? shellNote(agent)
+          : NO_STATUS_NOTE;
   return { delivered, route, agent, ...extra, note };
 }
 

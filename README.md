@@ -123,7 +123,8 @@ stable within contract 1; new optional fields may be added, none removed:
   (`zsh`, …).
 - `note`: for `delivered: false`, `did not start a turn; it may still have arrived,
   read before resending` — do not blindly resend. For `delivered: null`,
-  `opencode reports no turn status` for an opencode target, `target is a <kind>
+  `opencode reports no turn status` for an opencode target, `qoder reports no
+  turn status` for a qoder target, `target is a <kind>
   shell; hc reports no turn status` for a known shell kind, otherwise `target is an
   opencode TUI or a shell; hc reports no turn status`.
 
@@ -261,7 +262,7 @@ error) and `hcx --licenses`, `hcx ls --json`.
 
 ```sh
 hcx --version --json
-{"hcx":"0.4.1","hc":"0.1.15","contract":1,"capabilities":["no-footer","agent-only","json-delivery"]}
+{"hcx":"0.4.2","hc":"0.1.15","contract":1,"capabilities":["no-footer","agent-only","json-delivery"]}
 ```
 
 `contract` is 1 for this interface; `capabilities` lists what this hcx supports:
