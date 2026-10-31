@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { done } from "./done";
 import { loadTabs } from "./herdr";
 import { CAPABILITIES, CONTRACT_VERSION, HcxError, needsTabLookup, resolveArgs, runArgs } from "./lib";
-import { runHc, runTextCommand } from "./passthrough";
+import { runHc, runTextCommand, runTextPassthrough, TEXT_PASSTHROUGH_COMMANDS } from "./passthrough";
 import { send } from "./send";
 import { spawn } from "./spawn";
 import { VERSION } from "./version";
@@ -26,8 +26,10 @@ first terminal). Twin names are refused; addresses and numeric names pass throug
 
 Default output is human-readable text; JSON is printed only with --json.
 hcx send prints one line, hcx ls a table, hcx get key: value lines, hcx keys
-one line; with --json they print hc's JSON instead. Every other hc command is
-passed through unchanged, with its output, errors and exit code: hcx read Vrax,
+one line; with --json they print hc's JSON instead. One-shot pass-throughs
+(read kill rm label keep interrupt put) print hc's output unchanged, but an hc
+error document renders as text without --json. Every other hc command is
+passed through unchanged, with its output, errors and exit code: hcx attach Vrax,
 hcx command...
 hcx --version prints hcx's version, then hc's. hcx --version --json prints the
 machine contract: {"hcx","hc","contract","capabilities"}.
@@ -63,9 +65,14 @@ try {
     const resolved = resolveArgs(command, args, tabs);
     // The default output is human-readable text, JSON only with --json: `ls`,
     // `get` and `keys` render text without the flag and forward hc's JSON with
-    // it. Every other command passes through unchanged either way.
+    // it. Bounded one-shot pass-throughs capture hc's output so an error
+    // document renders as text without the flag. With --json and every other
+    // command hc is inherited unchanged.
     if (!args.includes("--json") && (command === "ls" || command === "get" || command === "keys")) {
       process.exit(runTextCommand(command, resolved));
+    }
+    if (!args.includes("--json") && TEXT_PASSTHROUGH_COMMANDS.has(command)) {
+      process.exit(runTextPassthrough(command, resolved));
     }
     process.exit(runHc([command, ...resolved]));
   }

@@ -1219,7 +1219,7 @@ describe("machine consumers read --json (0.5.0 regression)", () => {
 
     const r = s.run(["--version", "--json"]);
     expect(r.code).toBe(0);
-    expect(r.out).toBe('{"hcx":"0.5.0","hc":"9.9.9","contract":1,"capabilities":["no-footer","agent-only","json-delivery"]}\n');
+    expect(r.out).toBe('{"hcx":"0.5.1","hc":"9.9.9","contract":1,"capabilities":["no-footer","agent-only","json-delivery"]}\n');
   });
 
   test("hcx ls --json forwards hc's bytes", () => {
@@ -1427,5 +1427,114 @@ describe("hcx keys text output", () => {
     const r = s.run(["keys", "--json", "Mira", "enter"]);
     expect(r.code).toBe(0);
     expect(r.err).toBe("");
+  });
+});
+
+describe("pass-through text errors (0.5.1)", () => {
+  const NOT_FOUND = (t: string) =>
+    `{"error":{"hint":"see \`hc ls --all\`","kind":"not_found","message":"no terminal \\"${t}\\""}}\n`;
+  const TEXT = (t: string) => `hcx: no terminal "${t}"\nhint: see \`hc ls --all\`\n`;
+
+  test("read/kill/rm/label render not_found as text with hc's exit code", () => {
+    const cases: [string, string[]][] = [
+      ["read", []],
+      ["kill", []],
+      ["rm", []],
+      ["label", ["env=prod"]],
+    ];
+    for (const [command, extra] of cases) {
+      const s = sandbox();
+      s.answer("herdr.ls", { out: TABS });
+      s.answer(`${command}.t5`, { err: NOT_FOUND("t5"), exit: 3 });
+
+      const r = s.run([command, "Mira", ...extra]);
+      expect(r.code).toBe(3);
+      expect(r.out).toBe("");
+      expect(r.err).toBe(TEXT("t5"));
+      // The tab name still resolves to the address.
+      expect(s.call("hc", command)?.args).toContain("t5");
+    }
+  });
+
+  test("keep/interrupt/put render not_found as text too", () => {
+    const cases: [string, string[]][] = [["keep", []], ["interrupt", []], ["put", ["notes.txt"]]];
+    for (const [command, extra] of cases) {
+      const s = sandbox();
+      s.answer("herdr.ls", { out: TABS });
+      s.answer(`${command}.t5`, { err: NOT_FOUND("t5"), exit: 3 });
+
+      const r = s.run([command, "Mira", ...extra]);
+      expect(r.code).toBe(3);
+      expect(r.out).toBe("");
+      expect(r.err).toBe(TEXT("t5"));
+    }
+  });
+
+  test("an error document on stdout renders as text as well", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("read.t5", { out: NOT_FOUND("t5"), exit: 3 });
+
+    const r = s.run(["read", "Mira"]);
+    expect(r.code).toBe(3);
+    expect(r.out).toBe("");
+    expect(r.err).toBe(TEXT("t5"));
+  });
+
+  test("--json keeps hc's bytes and exit code", () => {
+    for (const command of ["read", "kill"]) {
+      const s = sandbox();
+      s.answer("herdr.ls", { out: TABS });
+      const body = NOT_FOUND("t5");
+      s.answer(`${command}.t5`, { out: body, exit: 3 });
+
+      const r = s.run([command, "--json", "Mira"]);
+      expect(r.code).toBe(3);
+      expect(r.out).toBe(body);
+      expect(r.err).toBe("");
+    }
+  });
+
+  test("success output is byte-identical on stdout and stderr", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    const out = "line one\nline two\n";
+    const err = "a warning\n";
+    s.answer("read.t5", { out, err });
+
+    const r = s.run(["read", "Mira"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(out);
+    expect(r.err).toBe(err);
+  });
+
+  test("a non-error failure passes hc's bytes through unchanged", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("read.t5", { out: "not json at all\n", exit: 1 });
+
+    const r = s.run(["read", "Mira"]);
+    expect(r.code).toBe(1);
+    expect(r.out).toBe("not json at all\n");
+    expect(r.err).toBe("");
+  });
+
+  test("wait still inherits stdio: raw error bytes and exit code", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    const body = NOT_FOUND("t5");
+    s.answer("wait.t5", { err: body, exit: 3 });
+
+    const r = s.run(["wait", "Mira"]);
+    expect(r.code).toBe(3);
+    expect(r.err).toBe(body);
+  });
+
+  test("unknown commands still pass through with hc's exit code", () => {
+    const s = sandbox();
+
+    const r = s.run(["command-unknown"]);
+    expect(r.code).toBe(0);
+    expect(s.calls().some((c) => c.tool === "hc" && c.args[0] === "command-unknown")).toBe(true);
   });
 });

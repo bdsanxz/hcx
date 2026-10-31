@@ -37,7 +37,37 @@ if (tool === "hc") {
   // hcx asks for JSON after the command (`hc keys --json t5 enter`); the fixture
   // is still named for the terminal.
   if (command === "keys") process.exit(answer(`keys.${rest[0] === "--json" ? rest[1] : rest[0]}`));
-  if (command === "kill" || command === "rm") process.exit(answer(`${command}.${rest[0]}`));
+  // Bounded one-shot pass-throughs (plus wait/attach for the inherit-std-io
+  // check): the fixture is named for the first positional terminal, skipping
+  // flags and their values, so `--json` anywhere still finds the same file.
+  if (
+    command === "read" ||
+    command === "kill" ||
+    command === "rm" ||
+    command === "label" ||
+    command === "keep" ||
+    command === "interrupt" ||
+    command === "put" ||
+    command === "wait" ||
+    command === "attach"
+  ) {
+    const takesValue = new Set(["--lines", "--timeout", "--history", "--output", "--children", "--if"]);
+    let terminal: string | undefined;
+    for (let i = 0; i < rest.length; i++) {
+      const arg = rest[i];
+      if (arg === "--") {
+        terminal = rest[i + 1];
+        break;
+      }
+      if (arg.startsWith("-") && arg !== "-") {
+        if (takesValue.has(arg)) i++;
+        continue;
+      }
+      terminal = arg;
+      break;
+    }
+    process.exit(answer(`${command}.${terminal ?? "unknown"}`));
+  }
   if (command === "--version" || command === "-V") process.exit(answer("hc.version"));
   process.exit(0);
 }

@@ -9,6 +9,8 @@ Everything else is passed through to `hc` unchanged.
 Default output is human-readable text; JSON is printed only when you pass
 `--json`, for mapping and programmatic use. `hcx send` prints one line,
 `hcx ls` a table, `hcx get` `key: value` lines, `hcx keys` one line;
+one-shot pass-throughs (`read`, `kill`, `rm`, `label`, `keep`, `interrupt`,
+`put`) print hc's output unchanged on success and render an hc error as text;
 `hcx spawn` and `hcx done` keep their text/`--json` split. Errors are text
 (`hcx: <message>`, plus a `hint: <hint>` second line) unless `--json` is
 given. With `--json` every command prints exactly the document it printed
@@ -290,10 +292,19 @@ prints `hcx <version>` on the first line and `hc <version>` on the second.
 `CWD` when a terminal reports one, then a `(+N hidden finished)` footer line),
 `hcx get` prints `key: value` lines, `hcx keys` prints one line; with `--json`
 they forward hc's JSON instead. Anything hcx cannot render sensibly falls back
-to hc's raw output unchanged. Every other command is passed straight to `hc`
-with inherited stdio, so output, stderr and exit code are `hc`'s own —
-including unknown commands (`hcx command-unknown` shows hc's error) and
-`hcx --licenses`, `hcx read Vrax`.
+to hc's raw output unchanged.
+
+One-shot pass-throughs — `read`, `kill`, `rm`, `label`, `keep`, `interrupt`,
+`put` — print hc's output unchanged on success; without `--json` an hc
+`{"error":…}` document renders as hcx text (`hcx: <message>`, plus a
+`hint: <hint>` second line) with hc's exit code. With `--json` they forward
+hc's bytes exactly.
+
+Every other command (`attach`, `run`, `wait`, `exec`, `file`, `events`,
+`server`, …, and unknown commands) is passed straight to `hc` with inherited
+stdio, so output, stderr and exit code are `hc`'s own — including unknown
+commands (`hcx command-unknown` shows hc's error) and `hcx --licenses`,
+`hcx attach Vrax`.
 
 ## Machine contract
 
@@ -301,7 +312,7 @@ including unknown commands (`hcx command-unknown` shows hc's error) and
 
 ```sh
 hcx --version --json
-{"hcx":"0.5.0","hc":"0.1.15","contract":1,"capabilities":["no-footer","agent-only","json-delivery"]}
+{"hcx":"0.5.1","hc":"0.1.15","contract":1,"capabilities":["no-footer","agent-only","json-delivery"]}
 ```
 
 `contract` is 1 for this interface; `capabilities` lists what this hcx supports:

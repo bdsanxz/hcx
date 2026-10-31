@@ -108,6 +108,58 @@ function renderCommandText(command: "ls" | "get" | "keys", args: string[], stdou
   return command === "ls" ? renderLsTable(value) : renderGetLines(value);
 }
 
+/**
+ * Pass-through commands that are non-interactive and bounded: without --json
+ * their output is captured so an hc `{"error":...}` document renders as hcx
+ * text (same exit code); successful output passes through byte for byte.
+ * Everything else (attach, run, wait, anything streaming or TTY-bound, and
+ * unknown commands) keeps inheriting stdio untouched.
+ */
+export const TEXT_PASSTHROUGH_COMMANDS = new Set([
+  "read",
+  "kill",
+  "rm",
+  "label",
+  "keep",
+  "interrupt",
+  "put",
+]);
+
+/**
+ * Runs `hc` capturing stdout/stderr for a bounded one-shot pass-through. On
+ * exit 0 both streams pass through byte for byte. On a non-zero exit, when
+ * either stream is an hc `{"error":...}` document it renders as hcx's own
+ * text error (same format as send/get/keys) with hc's exit code and the
+ * document bytes are suppressed; anything else passes through unchanged.
+ */
+export function runTextPassthrough(command: string, args: string[]): number {
+  const p = spawnSync("hc", [command, ...args]);
+  if (p.error) throw p.error;
+  if (p.signal) {
+    if (p.stdout && p.stdout.length) process.stdout.write(p.stdout);
+    if (p.stderr && p.stderr.length) process.stderr.write(p.stderr);
+    return 128 + (SIGNAL_NUMBERS[p.signal] ?? 0);
+  }
+  const status = p.status ?? 1;
+  if (status === 0) {
+    if (p.stdout && p.stdout.length) process.stdout.write(p.stdout);
+    if (p.stderr && p.stderr.length) process.stderr.write(p.stderr);
+    return 0;
+  }
+  const outText = p.stdout?.toString("utf8") ?? "";
+  const errText = p.stderr?.toString("utf8") ?? "";
+  const errDoc = parseErrorDoc(outText) ?? parseErrorDoc(errText);
+  if (errDoc) {
+    if (p.stderr && p.stderr.length && !parseErrorDoc(errText)) process.stderr.write(p.stderr);
+    if (p.stdout && p.stdout.length && !parseErrorDoc(outText)) process.stdout.write(p.stdout);
+    reportHcError(errDoc);
+    return status;
+  }
+  if (p.stdout && p.stdout.length) process.stdout.write(p.stdout);
+  if (p.stderr && p.stderr.length) process.stderr.write(p.stderr);
+  return status;
+}
+
 /** Runs `hc` with this process's stdio and returns its exit code (128+n on a signal). */
 export function runHc(args: string[], env: NodeJS.ProcessEnv = process.env, timeoutMs?: number): number {
   const p = spawnSync("hc", args, { env, stdio: "inherit", ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}) });
