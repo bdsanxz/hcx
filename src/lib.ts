@@ -1,4 +1,6 @@
 // Pure helpers: tab lookup, target resolution, send/run arguments and the spawn plan.
+import { readFileSync as readAgentsFile } from "node:fs";
+import { homedir as osHomedir } from "node:os";
 
 export interface TabInfo {
   id: string;
@@ -422,8 +424,129 @@ export function agentOf(agents: Map<string, string>, address: string): string | 
   return agents.get(address) ?? agents.get(address.toLowerCase()) ?? null;
 }
 
-/** Agents `hcx spawn` knows, and the command each one runs. */
-export const AGENTS: Record<string, string> = { muse: "muse", pi: "pi", claude: "claude", opencode: "opencode" };
+/** Agents `hcx spawn` knows by default, and the command each one runs. */
+export const AGENTS: Record<string, string> = {
+  muse: "muse",
+  pi: "pi",
+  claude: "claude",
+  opencode: "opencode",
+  agy: "agy",
+  qoder: "qodercli",
+};
+
+/** An agent name: lowercase letters, digits and dashes, starting with an alphanumeric. */
+export const AGENT_NAME_RE = /^[a-z0-9][a-z0-9-]*$/;
+
+/**
+ * Where the user's extra `hcx spawn` agents live: `$HCX_AGENTS_FILE` when set,
+ * else `${XDG_CONFIG_HOME:-~/.config}/hcx/agents.json`. A missing file is fine.
+ */
+export function agentsFilePath(): string {
+  const override = process.env.HCX_AGENTS_FILE;
+  if (override !== undefined && override !== "") return override;
+  const xdg = process.env.XDG_CONFIG_HOME;
+  const base = xdg !== undefined && xdg !== "" ? xdg : `${homeDir()}/.config`;
+  return `${base}/hcx/agents.json`;
+}
+
+/** The home directory for the default agents file location. */
+function homeDir(): string {
+  return process.env.HOME ?? osHomedir();
+}
+
+/** A resolved agent command: the argv prefix before the user's agent flags. */
+export type AgentCommand = string | string[];
+
+/** Agent names to their resolved argv prefix. */
+export type KnownAgents = Record<string, AgentCommand>;
+
+/** The built-in agents as argv prefixes. */
+export function builtinAgents(): KnownAgents {
+  return Object.fromEntries(Object.entries(AGENTS).map(([name, command]) => [name, [command]]));
+}
+
+/**
+ * Reads the user's agents file: a JSON object mapping an agent name to a command,
+ * either a string (`"agy"`) or a non-empty array of strings (`["agy", "--flag"]`,
+ * the argv prefix before the user's agent flags). A missing file is fine and reads
+ * as no extra agents. Anything malformed throws an HcxError of kind "usage" naming
+ * the file path and the offending agent name.
+ */
+export function loadAgentsFile(file?: string): KnownAgents {
+  const path = file ?? agentsFilePath();
+  let text: string;
+  try {
+    text = readAgentsFile(path, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code === "ENOENT") return {};
+    throw new HcxError(`bad agents file "${path}": cannot read it: ${(e as Error).message}`, { kind: "usage" });
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new HcxError(`bad agents file "${path}": not JSON`, { kind: "usage" });
+  }
+  if (!isRecord(parsed))
+    throw new HcxError(`bad agents file "${path}": must be a JSON object mapping agent name to command`, { kind: "usage" });
+  const known: KnownAgents = {};
+  for (const [name, command] of Object.entries(parsed)) {
+    if (!AGENT_NAME_RE.test(name))
+      throw new HcxError(`bad agents file "${path}": bad agent name "${name}": must match ^[a-z0-9][a-z0-9-]*$`, {
+        kind: "usage",
+      });
+    if (typeof command === "string") {
+      if (command === "")
+        throw new HcxError(`bad agents file "${path}": bad command for agent "${name}": must be a non-empty string or a non-empty array of non-empty strings`, {
+          kind: "usage",
+        });
+      known[name] = [command];
+    } else if (Array.isArray(command)) {
+      if (command.length === 0 || command.some((part) => typeof part !== "string" || part === ""))
+        throw new HcxError(`bad agents file "${path}": bad command for agent "${name}": must be a non-empty string or a non-empty array of non-empty strings`, {
+          kind: "usage",
+        });
+      known[name] = [...(command as string[])];
+    } else {
+      throw new HcxError(`bad agents file "${path}": bad command for agent "${name}": must be a non-empty string or a non-empty array of non-empty strings`, {
+        kind: "usage",
+      });
+    }
+  }
+  return known;
+}
+
+/** Built-ins merged with the user's agents file: configured entries override same-named built-ins. */
+export function knownAgents(): KnownAgents {
+  return { ...builtinAgents(), ...loadAgentsFile() };
+}
+
+/** The usage line for the given known agent names. */
+export function spawnUsage(known: KnownAgents = builtinAgents()): string {
+  return `usage: hcx spawn <${Object.keys(known).join("|")}> [--name N] [--space S] [--folder DIR] [--task TEXT] [--json] [agent flags...]`;
+}
+
+/**
+ * The full `hcx spawn --help` text for the given known agents: the static help plus
+ * which agents are known and where the agents file lives.
+ */
+export function spawnHelp(known: KnownAgents = builtinAgents(), file?: string): string {
+  const path = file ?? agentsFilePath();
+  return `${spawnUsage(known)}
+
+Start an agent in a tab of its own (no parent terminal) through herdr-app do tab.new.
+Only --name, --space, --folder (-C), --task and --json are hcx's own; every other flag
+goes to the agent, and -- forces the rest to the agent. Values take a space or =:
+--name Review, --space=SWE, --model provider/model. A value starting with - is refused.
+
+opencode takes --model provider/model [--variant LEVEL] as hcx's own too: the model
+is checked against the registry and switched before the tab opens. Extra agent flags
+are kept after --session: hcx spawn opencode --model p/m -- --yolo.
+
+Known agents: ${Object.keys(known).join(", ")}. The built-ins are ${Object.keys(AGENTS).join(", ")}.
+Add more in ${path}: {"myagent": "mycmd"} or {"myagent": ["mycmd", "--flag"]} (an entry
+with a built-in name overrides that built-in).`;
+}
 
 /** Spellings people type that the agent itself spells differently. */
 const FLAG_ALIASES: Record<string, string> = { "--dangerously-skip-permission": "--dangerously-skip-permissions" };
@@ -459,17 +582,20 @@ are kept after --session: hcx spawn opencode --model p/m -- --yolo.`;
 
 /**
  * `<agent> [--name N] [--folder DIR] [--task TEXT] [--space S] [--json] [agent flags...]`.
- * Only those are hcx's own; every other flag goes to the agent. For opencode, `--model`
- * and `--variant` are hcx's own too, because they choose the session's model. `-h` and
- * `--help` are not parsed here: `spawn` intercepts a leading one (`spawn muse --help`
- * still goes to the agent).
+ * Only those are hcx's own; every other flag goes to the agent. For the agent named
+ * opencode, `--model` and `--variant` are hcx's own too, because they choose the
+ * session's model. `-h` and `--help` are not parsed here: `spawn` intercepts a leading
+ * one (`spawn muse --help` still goes to the agent). `known` is the built-ins merged
+ * with the user's agents file; it defaults to the built-ins so unit use stays hermetic.
  */
-export function parseSpawn(args: string[]): SpawnPlan {
+export function parseSpawn(args: string[], known: KnownAgents = builtinAgents()): SpawnPlan {
   const [agent, ...rest] = args;
-  if (!agent) throw new HcxError(SPAWN_USAGE, { kind: "usage" });
-  const command = AGENTS[agent];
-  if (!command) throw new HcxError(`unknown agent "${agent}"; known: ${Object.keys(AGENTS).join(", ")}`, { kind: "usage" });
-  const plan: SpawnPlan = { agent, argv: [command] };
+  if (!agent) throw new HcxError(spawnUsage(known), { kind: "usage" });
+  const entry = known[agent];
+  if (entry === undefined)
+    throw new HcxError(`unknown agent "${agent}"; known: ${Object.keys(known).join(", ")}`, { kind: "usage" });
+  const prefix = Array.isArray(entry) ? entry : [entry];
+  const plan: SpawnPlan = { agent, argv: [...prefix] };
   const value = (flag: string, raw: string | undefined, i: number) => {
     const v = raw ?? rest[i + 1];
     if (v === undefined || v.startsWith("-"))

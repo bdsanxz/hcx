@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
+  AGENTS,
   CAPABILITIES,
   CONTRACT_VERSION,
   HcxError,
@@ -9,11 +13,15 @@ import {
   SEND_TIMEOUT_MS,
   TERMINAL_COMMANDS,
   agentOf,
+  agentsFilePath,
+  builtinAgents,
   checkModel,
   deliveryFields,
   firstPositional,
   formatTimeout,
   isAddress,
+  knownAgents,
+  loadAgentsFile,
   nameTaken,
   needsTabLookup,
   parseModel,
@@ -31,6 +39,8 @@ import {
   sendTimeoutMs,
   sessionModel,
   shellNote,
+  spawnHelp,
+  spawnUsage,
   withFooter,
 } from "../src/lib";
 import { isTimeoutError, sendTimeoutError } from "../src/passthrough";
@@ -581,6 +591,129 @@ describe("machine contract", () => {
   test("contract version and capabilities are stable", () => {
     expect(CONTRACT_VERSION).toBe(1);
     expect(CAPABILITIES).toEqual(["no-footer", "agent-only", "json-delivery"]);
+  });
+});
+
+describe("spawn agents config", () => {
+  test("defaults include agy and qoder with their commands", () => {
+    expect(AGENTS.agy).toBe("agy");
+    expect(AGENTS.qoder).toBe("qodercli");
+    expect(parseSpawn(["agy", "--yolo"]).argv).toEqual(["agy", "--yolo"]);
+    expect(parseSpawn(["qoder"]).argv).toEqual(["qodercli"]);
+    expect(() => parseSpawn(["kiro-cli"])).toThrow(/unknown agent/);
+  });
+
+  test("agentsFilePath honours HCX_AGENTS_FILE", () => {
+    const saved = process.env.HCX_AGENTS_FILE;
+    try {
+      process.env.HCX_AGENTS_FILE = "/tmp/custom-agents.json";
+      expect(agentsFilePath()).toBe("/tmp/custom-agents.json");
+    } finally {
+      if (saved === undefined) delete process.env.HCX_AGENTS_FILE;
+      else process.env.HCX_AGENTS_FILE = saved;
+    }
+  });
+
+  test("agentsFilePath falls back to XDG_CONFIG_HOME then ~/.config", () => {
+    const savedFile = process.env.HCX_AGENTS_FILE;
+    const savedXdg = process.env.XDG_CONFIG_HOME;
+    const savedHome = process.env.HOME;
+    try {
+      delete process.env.HCX_AGENTS_FILE;
+      process.env.XDG_CONFIG_HOME = "/tmp/xdg";
+      expect(agentsFilePath()).toBe("/tmp/xdg/hcx/agents.json");
+      delete process.env.XDG_CONFIG_HOME;
+      process.env.HOME = "/tmp/home";
+      expect(agentsFilePath()).toBe("/tmp/home/.config/hcx/agents.json");
+    } finally {
+      if (savedFile === undefined) delete process.env.HCX_AGENTS_FILE;
+      else process.env.HCX_AGENTS_FILE = savedFile;
+      if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+      else process.env.XDG_CONFIG_HOME = savedXdg;
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+    }
+  });
+
+  test("a missing agents file is fine", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hcx-agents-"));
+    expect(loadAgentsFile(join(dir, "no-such-file.json"))).toEqual({});
+  });
+
+  test("string and array commands read as argv prefixes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hcx-agents-"));
+    const file = join(dir, "agents.json");
+    writeFileSync(file, JSON.stringify({ reviewer: "agy", builder: ["qodercli", "--some-flag"] }));
+    expect(loadAgentsFile(file)).toEqual({ reviewer: ["agy"], builder: ["qodercli", "--some-flag"] });
+  });
+
+  test("each malformed case errors with the path and the key", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hcx-agents-"));
+    const cases: [string, string, RegExp][] = [
+      ["not json at all", "not json", /not JSON/],
+      ['["agy"]', "array", /must be a JSON object/],
+      ['"agy"', "string", /must be a JSON object/],
+      ['{"Bad_Name": "agy"}', "name", /Bad_Name/],
+      ['{"": "agy"}', "empty-name", /bad agent name/],
+      ['{"reviewer": ""}', "reviewer", /reviewer/],
+      ['{"reviewer": []}', "reviewer", /reviewer/],
+      ['{"reviewer": ["agy", ""]}', "reviewer", /reviewer/],
+      ['{"reviewer": ["agy", 3]}', "reviewer", /reviewer/],
+      ['{"reviewer": 3}', "reviewer", /reviewer/],
+      ['{"reviewer": null}', "reviewer", /reviewer/],
+      ['{"reviewer": {"cmd": "agy"}}', "reviewer", /reviewer/],
+    ];
+    for (const [body, label, key] of cases) {
+      const file = join(dir, `agents-${label}.json`);
+      writeFileSync(file, body);
+      try {
+        loadAgentsFile(file);
+        expect.unreachable(`expected ${label} to throw`);
+      } catch (e) {
+        expect(e).toBeInstanceOf(HcxError);
+        expect((e as HcxError).kind).toBe("usage");
+        expect((e as Error).message).toContain(file);
+        expect((e as Error).message).toMatch(key);
+      }
+    }
+  });
+
+  test("configured agents merge over the built-ins", () => {
+    const dir = mkdtempSync(join(tmpdir(), "hcx-agents-"));
+    const file = join(dir, "agents.json");
+    writeFileSync(file, JSON.stringify({ reviewer: "agy", muse: ["muse", "--flag"] }));
+    const saved = process.env.HCX_AGENTS_FILE;
+    try {
+      process.env.HCX_AGENTS_FILE = file;
+      const known = knownAgents();
+      expect(known.reviewer).toEqual(["agy"]);
+      expect(known.muse).toEqual(["muse", "--flag"]);
+      expect(known.pi).toEqual(["pi"]);
+    } finally {
+      if (saved === undefined) delete process.env.HCX_AGENTS_FILE;
+      else process.env.HCX_AGENTS_FILE = saved;
+    }
+  });
+
+  test("parseSpawn runs configured agents and overridden built-ins", () => {
+    const known = { ...builtinAgents(), reviewer: ["agy"], builder: ["qodercli", "--some-flag"], muse: ["muse", "--flag"] };
+    expect(parseSpawn(["reviewer", "--yolo"], known).argv).toEqual(["agy", "--yolo"]);
+    expect(parseSpawn(["builder", "--", "--yolo"], known).argv).toEqual(["qodercli", "--some-flag", "--yolo"]);
+    expect(parseSpawn(["muse", "--name", "Audit"], known).argv).toEqual(["muse", "--flag"]);
+    expect(parseSpawn(["opencode", "--model", "v/w"], known)).toEqual({
+      agent: "opencode",
+      argv: ["opencode"],
+      model: "v/w",
+    });
+    expect(() => parseSpawn(["gemini"], known)).toThrow(/unknown agent "gemini"; known: .*reviewer/);
+  });
+
+  test("usage and help list the known agents and the file path", () => {
+    const known = { ...builtinAgents(), reviewer: ["agy"] };
+    expect(spawnUsage(known)).toContain("reviewer");
+    const help = spawnHelp(known, "/tmp/custom-agents.json");
+    expect(help).toContain("reviewer");
+    expect(help).toContain("/tmp/custom-agents.json");
   });
 });
 

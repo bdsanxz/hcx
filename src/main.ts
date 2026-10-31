@@ -14,7 +14,7 @@ const USAGE = `hcx — helper over hc for Herdr
                                      --no-footer (alias --raw): the text exactly as given
                                      --agent-only: refuse a plain shell or unknown kind
                                      hcx send --help prints this help, not hc's
-  hcx spawn <muse|pi|claude|opencode> [--name N] [--space S] [--folder DIR] [--task TEXT] [--json] [agent flags...]
+  hcx spawn <muse|pi|claude|opencode|agy|qoder> [--name N] [--space S] [--folder DIR] [--task TEXT] [--json] [agent flags...]
                                      start the agent in a tab of its own (no parent terminal)
                                      opencode: --model provider/model [--variant LEVEL]
   hcx done [--self] [--json] <tab>...  kill each live terminal, then remove it

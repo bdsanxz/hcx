@@ -1,16 +1,26 @@
 import { spawnSync } from "node:child_process";
 import { loadHerdr, loadTabs } from "./herdr";
-import { HcxError, nameTaken, parseSpawn, pickSpace, SPAWN_HELP } from "./lib";
+import { agentsFilePath, builtinAgents, HcxError, knownAgents, loadAgentsFile, nameTaken, parseSpawn, pickSpace, spawnHelp } from "./lib";
 import { prepareOpencodeSession } from "./opencode";
 
 /** Opens the agent in a tab of its own (`herdr-app do tab.new`), so it has no parent terminal. */
 export function spawn(args: string[]): number {
   // `hcx spawn --help` is hcx's own help. (`spawn muse --help` still goes to the agent.)
+  // Help never fails on a broken agents file: it lists the built-ins and the file path.
   if (args[0] === "--help" || args[0] === "-h") {
-    console.log(SPAWN_HELP);
+    const file = agentsFilePath();
+    let known = builtinAgents();
+    let note = "";
+    try {
+      known = { ...known, ...loadAgentsFile(file) };
+    } catch (e) {
+      note = `\n\nWarning: ${e instanceof HcxError ? e.message : String(e)}`;
+    }
+    console.log(spawnHelp(known, file) + note);
     return 0;
   }
-  const plan = parseSpawn(args);
+  // A broken agents file breaks only spawn: send, done and pass-through never read it.
+  const plan = parseSpawn(args, knownAgents());
   // One Herdr read for the name check, the space lookup and the auto-name poll below.
   const herdr = loadHerdr();
   if (!herdr.ok) {
@@ -37,7 +47,7 @@ export function spawn(args: string[]): number {
   let session: string | undefined;
   if (plan.agent === "opencode" && plan.model) {
     session = prepareOpencodeSession(folder, plan.name, plan.model, plan.variant);
-    plan.argv = ["opencode", "--session", session, ...plan.argv.slice(1)];
+    plan.argv = [plan.argv[0], "--session", session, ...plan.argv.slice(1)];
   }
   const doArgs = ["do", "tab.new", "--argv", JSON.stringify(plan.argv), "--folder", folder];
   if (space) doArgs.push("--space", space);

@@ -28,3 +28,4 @@ Every issue reported against `hcx` is logged here first, then worked. Newest las
 | 22 | 2026-10-31 | owner review | 0.2.0 | The `hc send` subprocess has no timeout, so a hung send blocks forever. | Fixed in 0.3.0 |
 | 23 | 2026-10-31 | owner review | 0.2.0 | Raw sends (`--no-footer`) to a terminal address still call `herdr-app ls` although no sender name or resolution is needed. | Fixed in 0.3.0 |
 | 24 | 2026-10-31 | owner review | 0.2.0 | No machine-readable version/capability check and the `send --json` fields are not a documented versioned interface. | Fixed in 0.3.0 |
+| 25 | 2026-10-31 | owner request | 0.3.0 | `hcx spawn` agents are a hardcoded list, so `agy`, `qoder` and user agents need a code change to run. | Fixed in 0.4.0 |

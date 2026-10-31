@@ -136,21 +136,46 @@ In a terminal, without `--json`, the human line stays hc's own.
 ## `hcx spawn`
 
 ```sh
-hcx spawn <muse|pi|claude|opencode> [--name N] [--space S] [--folder DIR] [--task TEXT] [--json] [agent flags...]
+hcx spawn <muse|pi|claude|opencode|agy|qoder> [--name N] [--space S] [--folder DIR] [--task TEXT] [--json] [agent flags...]
 ```
 
 Start an agent in a tab of its own, in the current folder (or `--folder`). It goes
 through `herdr-app do tab.new`, never `hc run`, so the new agent has **no parent
 terminal**: it does not hang under the agent that started it, and it is not ended with
-it.
+it. The built-in agents are `muse`, `pi`, `claude`, `opencode`, `agy` (runs `agy`)
+and `qoder` (runs `qodercli`).
 
 ```sh
 hcx spawn muse --yolo
 hcx spawn pi --space SWE   # open the tab in another space
 hcx spawn claude --dangerously-skip-permissions   # the singular spelling is accepted too
 hcx spawn opencode
+hcx spawn agy --yolo
+hcx spawn qoder
 hcx spawn pi --task "review src/"
 ```
+
+### Custom agents
+
+Known agents are the built-ins merged with a JSON config file: `$HCX_AGENTS_FILE`
+when set, else `${XDG_CONFIG_HOME:-~/.config}/hcx/agents.json`. A missing file is
+fine. The file is a JSON object mapping an agent name (`^[a-z0-9][a-z0-9-]*$`) to a
+command: either a string or a non-empty array of strings (the array is the argv
+prefix before the user's agent flags). An entry with a built-in name overrides that
+built-in.
+
+```sh
+# $HCX_AGENTS_FILE, or ~/.config/hcx/agents.json:
+{"reviewer": "agy", "builder": ["qodercli", "--some-flag"]}
+hcx spawn reviewer --name Audit   # runs: agy
+hcx spawn builder -- --yolo       # runs: qodercli --some-flag --yolo
+hcx spawn muse ...               # still runs: muse (override with {"muse": ["muse", "--flag"]})
+```
+
+A malformed file (bad JSON, wrong type, bad name, empty command) fails `hcx spawn`
+with a `usage` error naming the file path and the offending name; `send`, `done`
+and pass-through commands never read the file. `hcx spawn --help` lists the known
+agents and prints the resolved file path.
 
 The tab opens in the space of the terminal that runs `hcx spawn` (not whichever space is active); `--space` takes a space name or id to put it elsewhere.
 
@@ -235,7 +260,7 @@ error) and `hcx --licenses`, `hcx ls --json`.
 
 ```sh
 hcx --version --json
-{"hcx":"0.3.0","hc":"0.1.15","contract":1,"capabilities":["no-footer","agent-only","json-delivery"]}
+{"hcx":"0.4.0","hc":"0.1.15","contract":1,"capabilities":["no-footer","agent-only","json-delivery"]}
 ```
 
 `contract` is 1 for this interface; `capabilities` lists what this hcx supports:

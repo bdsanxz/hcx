@@ -944,6 +944,162 @@ describe("hcx send raw address", () => {
   });
 });
 
+describe("hcx spawn agents file", () => {
+  test("a configured agent runs with its command", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("herdr.do", { out: '{"tab":"tab9","terminal":"t90"}\n' });
+    const agents = join(s.root, "agents.json");
+    writeFileSync(agents, JSON.stringify({ reviewer: "agy" }));
+
+    const r = s.run(["spawn", "reviewer", "--name", "Audit", "--folder", s.folder(), "--json"], { HCX_AGENTS_FILE: agents });
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toMatchObject({ agent: "reviewer", name: "Audit", terminal: "t90" });
+    const tab = s.call("herdr-app", "do");
+    expect(JSON.parse(tab!.args[tab!.args.indexOf("--argv") + 1])).toEqual(["agy"]);
+  });
+
+  test("an array command is the argv prefix, and overrides a built-in", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("herdr.do", { out: '{"tab":"tab9","terminal":"t90"}\n' });
+    const agents = join(s.root, "agents.json");
+    writeFileSync(agents, JSON.stringify({ muse: ["muse", "--flag"], builder: ["qodercli", "--some-flag"] }));
+    const folder = s.folder();
+
+    const overridden = s.run(["spawn", "muse", "--name", "Kept", "--folder", folder, "--", "--yolo"], {
+      HCX_AGENTS_FILE: agents,
+    });
+    expect(overridden.code).toBe(0);
+    const first = s.calls().filter((c) => c.tool === "herdr-app" && c.args[0] === "do");
+    expect(JSON.parse(first[0]!.args[first[0]!.args.indexOf("--argv") + 1])).toEqual(["muse", "--flag", "--yolo"]);
+
+    const added = s.run(["spawn", "builder", "--name", "Kept2", "--folder", folder], { HCX_AGENTS_FILE: agents });
+    expect(added.code).toBe(0);
+    const both = s.calls().filter((c) => c.tool === "herdr-app" && c.args[0] === "do");
+    expect(JSON.parse(both[1]!.args[both[1]!.args.indexOf("--argv") + 1])).toEqual(["qodercli", "--some-flag"]);
+  });
+
+  test("a missing agents file is fine", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("herdr.do", { out: '{"tab":"tab9","terminal":"t90"}\n' });
+
+    const r = s.run(["spawn", "agy", "--name", "Fresh", "--folder", s.folder()], {
+      HCX_AGENTS_FILE: join(s.root, "no-such.json"),
+    });
+    expect(r.code).toBe(0);
+    expect(r.out).toBe('spawned Fresh (t90, agy) · message it: hcx send Fresh "..."\n');
+  });
+
+  test("malformed files fail spawn with the path and the key", () => {
+    const bodies: [string, RegExp | null][] = [
+      ["not json at all", null],
+      ['["agy"]', null],
+      ['{"Bad_Name": "agy"}', /Bad_Name/],
+      ['{"reviewer": ""}', /reviewer/],
+      ['{"reviewer": []}', /reviewer/],
+      ['{"reviewer": 3}', /reviewer/],
+    ];
+    for (const [index, [body, key]] of bodies.entries()) {
+      const s = sandbox();
+      s.answer("herdr.ls", { out: TABS });
+      const agents = join(s.root, `agents-${index}.json`);
+      writeFileSync(agents, body);
+
+      const r = s.run(["spawn", "--json", "muse", "--name", "Fresh", "--folder", s.folder()], { HCX_AGENTS_FILE: agents });
+      expect(r.code).toBe(2);
+      const err = JSON.parse(r.err);
+      expect(err.error.kind).toBe("usage");
+      expect(err.error.message).toContain(agents);
+      if (key) expect(err.error.message).toMatch(key);
+      expect(s.call("herdr-app", "do")).toBeUndefined();
+    }
+  });
+
+  test("HCX_AGENTS_FILE wins and XDG_CONFIG_HOME resolves the default", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("herdr.do", { out: '{"tab":"tab9","terminal":"t90"}\n' });
+    const xdg = join(s.root, "xdg");
+    mkdirSync(join(xdg, "hcx"), { recursive: true });
+    writeFileSync(join(xdg, "hcx", "agents.json"), JSON.stringify({ xdger: "agy" }));
+
+    const fromXdg = s.run(["spawn", "xdger", "--name", "X1", "--folder", s.folder("w1")], {
+      HCX_AGENTS_FILE: "",
+      XDG_CONFIG_HOME: xdg,
+    });
+    expect(fromXdg.code).toBe(0);
+
+    const other = join(s.root, "other.json");
+    writeFileSync(other, JSON.stringify({ other: "agy" }));
+    const fromOverride = s.run(["spawn", "other", "--name", "X2", "--folder", s.folder("w2")], {
+      HCX_AGENTS_FILE: other,
+      XDG_CONFIG_HOME: xdg,
+    });
+    expect(fromOverride.code).toBe(0);
+
+    const missing = s.run(["spawn", "xdger", "--name", "X3", "--folder", s.folder("w3")], {
+      HCX_AGENTS_FILE: other,
+      XDG_CONFIG_HOME: xdg,
+    });
+    expect(missing.code).toBe(2);
+    expect(JSON.parse(missing.err).error.message).toContain("unknown agent");
+  });
+
+  test("a broken agents file does not break send, done or pass-through", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.send", { out: '{"started":true,"status":"idle","turn":1}\n' });
+    s.answer("kill.t5", { out: "{}\n" });
+    s.answer("rm.t5", { out: '{"removed":"t5"}\n' });
+    const agents = join(s.root, "agents.json");
+    writeFileSync(agents, "not json");
+    const env = { HCX_AGENTS_FILE: agents };
+
+    expect(s.run(["send", "--json", "Mira", "hello"], env).code).toBe(0);
+    expect(s.run(["done", "Mira"], env).code).toBe(0);
+    const get = s.run(["get", "Mira"], env);
+    expect(get.code).toBe(0);
+    expect(s.call("hc", "get")?.args).toEqual(["get", "t5"]);
+  });
+
+  test("--help lists configured agents and the file path", () => {
+    const s = sandbox();
+    const agents = join(s.root, "agents.json");
+    writeFileSync(agents, JSON.stringify({ reviewer: "agy" }));
+
+    const r = s.run(["spawn", "--help"], { HCX_AGENTS_FILE: agents });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("reviewer");
+    expect(r.out).toContain("agy");
+    expect(r.out).toContain(agents);
+    expect(s.calls().length).toBe(0);
+  });
+
+  test("opencode --model still works alongside configured agents", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("herdr.do", { out: '{"tab":"tab9","terminal":"t90"}\n' });
+    s.answer("opencode.model.list", { out: '{"data":[{"id":"m","providerID":"v","enabled":true,"variants":[]}]}\n' });
+    s.answer("opencode.session.create", { out: '{"data":{"id":"ses_9"}}\n' });
+    s.answer("opencode.session.switchModel", { out: "{}\n" });
+    s.answer("opencode.session.list", { out: '{"data":[{"id":"ses_9","model":{"providerID":"v","id":"m"}}]}\n' });
+    const agents = join(s.root, "agents.json");
+    writeFileSync(agents, JSON.stringify({ reviewer: "agy", opencode: ["opencode", "--flag"] }));
+    const folder = s.folder();
+
+    const r = s.run(["spawn", "opencode", "--model", "v/m", "--name", "Kept", "--folder", folder, "--json"], {
+      HCX_AGENTS_FILE: agents,
+    });
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toMatchObject({ agent: "opencode", model: "v/m", session: "ses_9" });
+    const tab = s.call("herdr-app", "do");
+    expect(JSON.parse(tab!.args[tab!.args.indexOf("--argv") + 1])).toEqual(["opencode", "--session", "ses_9", "--flag"]);
+  });
+});
+
 describe("hcx send timeout", () => {
   test("a hung hc send is killed and reports kind timeout without retrying", () => {
     const s = sandbox();
