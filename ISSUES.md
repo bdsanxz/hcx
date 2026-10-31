@@ -31,3 +31,4 @@ Every issue reported against `hcx` is logged here first, then worked. Newest las
 | 25 | 2026-10-31 | owner request | 0.3.0 | `hcx spawn` agents are a hardcoded list, so `agy`, `qoder` and user agents need a code change to run. | Fixed in 0.4.0 |
 | 26 | 2026-10-31 | owner request | 0.4.0 | a qoder tab behind a shell wrapper is seen as a plain shell (`qodercli-1.1.81` foreground), so `hcx send --agent-only` refuses it. | Fixed in 0.4.1 |
 | 27 | 2026-10-31 | owner request | 0.4.1 | qoder delivery note names an opencode TUI (`target is an opencode TUI or a shell; hc reports no turn status` instead of a qoder note). | Fixed in 0.4.2 |
+| 28 | 2026-10-31 | owner request | 0.4.2 | Default output is JSON (hcx forwards hc's JSON-first output for `send`, `ls`, `get`, `keys` and other pass-throughs) and errors are JSON whenever stderr is piped; default should be human-readable text, JSON only with `--json`. | Fixed in 0.5.0 |

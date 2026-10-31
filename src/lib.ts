@@ -271,7 +271,9 @@ export const SEND_USAGE =
 export const SEND_HELP = `${SEND_USAGE}
 
 Send a message to another terminal without the <hc from> tag, by tab name, with a
-footer that names the sender. hc flags go before the target or before the text:
+footer that names the sender. Without --json it prints one text line
+(sent to Vrax (t10, claude-code): delivered, status idle, turn 4); with --json
+it prints the result object with the delivery fields. hc flags go before the target or before the text:
 --wait, --force, --json, --if <status>, --timeout <seconds>. --timeout is hc's own
 wait timeout and is passed through; the hc send call itself is killed after 30 s
 (a {"error":{"kind":"timeout"}} error: the message may have landed, never retry).

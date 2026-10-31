@@ -46,6 +46,7 @@ import {
 } from "../src/lib";
 import { isTimeoutError, sendTimeoutError } from "../src/passthrough";
 import { resolveForegroundAgent } from "../src/herdr";
+import { formatSendLine, parseErrorDoc, renderGetLines, renderLsTable } from "../src/text";
 
 const ls = {
   spaces: [
@@ -734,6 +735,116 @@ describe("spawn agents config", () => {
     const help = spawnHelp(known, "/tmp/custom-agents.json");
     expect(help).toContain("reviewer");
     expect(help).toContain("/tmp/custom-agents.json");
+  });
+});
+
+describe("formatSendLine", () => {
+  test("a delivered send is one line with status and turn", () => {
+    expect(formatSendLine({ target: "Mira", address: "t5", agent: "muse", delivered: true, status: "idle", turn: 3 })).toBe(
+      "sent to Mira (t5, muse): delivered, status idle, turn 3",
+    );
+  });
+  test("a send that started no turn appends the note", () => {
+    expect(
+      formatSendLine({
+        target: "Mira",
+        address: "t5",
+        agent: "muse",
+        delivered: false,
+        status: "idle",
+        turn: 3,
+        note: NOT_STARTED_NOTE,
+      }),
+    ).toBe(`sent to Mira (t5, muse): not delivered, status idle, turn 3: ${NOT_STARTED_NOTE}`);
+  });
+  test("an unconfirmed send appends the note and unknown fields", () => {
+    expect(
+      formatSendLine({
+        target: "Shell",
+        address: "t6",
+        agent: "zsh",
+        delivered: null,
+        status: null,
+        turn: 0,
+        note: "target is a zsh shell; hc reports no turn status",
+      }),
+    ).toBe(
+      "sent to Shell (t6, zsh): delivery unconfirmed, status unknown, turn 0: target is a zsh shell; hc reports no turn status",
+    );
+  });
+  test("missing agent, status and turn render as unknown, never blank", () => {
+    expect(formatSendLine({ target: "Ghost", address: "Ghost", agent: null, delivered: null, status: null, turn: null })).toBe(
+      "sent to Ghost (Ghost, unknown): delivery unconfirmed, status unknown, turn unknown",
+    );
+  });
+});
+
+describe("renderLsTable", () => {
+  const listing = {
+    hidden_finished: 2,
+    terminals: [
+      { address: "t5", agent: "muse", cwd: "/repo", state: "live", status: "idle", turn: 3, where: "SWE / Mira" },
+      { address: "t6", agent: "zsh", cwd: "/repo", state: "live", turn: 0, where: "SWE / Shell" },
+    ],
+  };
+  test("renders every column and the hidden-finished footer", () => {
+    expect(renderLsTable(listing)).toBe(
+      "ADDRESS AGENT STATUS TURN WHERE       CWD\n" +
+        "t5      muse  idle   3    SWE / Mira  /repo\n" +
+        "t6      zsh   -      0    SWE / Shell /repo\n" +
+        "(+2 hidden finished)",
+    );
+  });
+  test("omits CWD and the footer when there is nothing to show", () => {
+    expect(
+      renderLsTable({
+        hidden_finished: 0,
+        terminals: [{ address: "t5", agent: "muse", status: "idle", turn: 3, where: "SWE / Mira" }],
+      }),
+    ).toBe("ADDRESS AGENT STATUS TURN WHERE\n" + "t5      muse  idle   3    SWE / Mira");
+  });
+  test("returns null when the value is not an hc ls listing", () => {
+    expect(renderLsTable(null)).toBeNull();
+    expect(renderLsTable({})).toBeNull();
+    expect(renderLsTable({ terminals: "oops" })).toBeNull();
+    expect(renderLsTable({ terminals: [null] })).toBeNull();
+  });
+});
+
+describe("parseErrorDoc", () => {
+  test("reads message and hint out of an hc error document", () => {
+    expect(parseErrorDoc('{"error":{"hint":"see `hc ls --all`","kind":"not_found","message":"no terminal \\"t9\\""}}\n')).toEqual({
+      message: 'no terminal "t9"',
+      hint: "see `hc ls --all`",
+    });
+    expect(parseErrorDoc('{"error":{"kind":"usage","message":"bad flags"}}')).toEqual({ message: "bad flags" });
+  });
+  test("returns null when the text is not an hc error document", () => {
+    expect(parseErrorDoc("")).toBeNull();
+    expect(parseErrorDoc("not json\n")).toBeNull();
+    expect(parseErrorDoc('{"started":true}\n')).toBeNull();
+    expect(parseErrorDoc('{"error":"oops"}\n')).toBeNull();
+    expect(parseErrorDoc('{"error":{"kind":"not_found"}}\n')).toBeNull();
+    expect(parseErrorDoc('{"error":{"kind":"not_found","message":3}}\n')).toBeNull();
+    expect(parseErrorDoc('{"error":{"kind":"not_found","message":"m","hint":4}}\n')).toEqual({ message: "m" });
+  });
+});
+
+describe("renderGetLines", () => {
+  test("renders key: value lines in hc's key order", () => {
+    expect(renderGetLines({ address: "t5", agent: "muse", status: "idle", turn: 3 })).toBe(
+      "address: t5\nagent: muse\nstatus: idle\nturn: 3",
+    );
+  });
+  test("renders null as -, keeps nested objects as compact JSON", () => {
+    expect(renderGetLines({ name: null, title: "", foreground: { name: "zsh" }, keep: true })).toBe(
+      'name: -\ntitle: -\nforeground: {"name":"zsh"}\nkeep: true',
+    );
+  });
+  test("returns null for non-records and hc error shapes", () => {
+    expect(renderGetLines(null)).toBeNull();
+    expect(renderGetLines("nope")).toBeNull();
+    expect(renderGetLines({ error: { kind: "not_found", message: "gone" } })).toBeNull();
   });
 });
 

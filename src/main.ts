@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { done } from "./done";
 import { loadTabs } from "./herdr";
 import { CAPABILITIES, CONTRACT_VERSION, HcxError, needsTabLookup, resolveArgs, runArgs } from "./lib";
-import { runHc } from "./passthrough";
+import { runHc, runTextCommand } from "./passthrough";
 import { send } from "./send";
 import { spawn } from "./spawn";
 import { VERSION } from "./version";
@@ -24,8 +24,11 @@ Tab names work anywhere hc takes a <terminal> (get attach read kill rm label kee
 interrupt wait put send): a name, any case, becomes that tab's agent terminal (or its
 first terminal). Twin names are refused; addresses and numeric names pass through.
 
-Every other hc command is passed through unchanged, with its output, errors and exit
-code: hcx ls --json, hcx read Vrax, hcx command...
+Default output is human-readable text; JSON is printed only with --json.
+hcx send prints one line, hcx ls a table, hcx get key: value lines, hcx keys
+one line; with --json they print hc's JSON instead. Every other hc command is
+passed through unchanged, with its output, errors and exit code: hcx read Vrax,
+hcx command...
 hcx --version prints hcx's version, then hc's. hcx --version --json prints the
 machine contract: {"hcx","hc","contract","capabilities"}.
 
@@ -57,7 +60,14 @@ try {
     process.exit(runHc(["run", ...runArgs(args)]));
   } else {
     const tabs = needsTabLookup(command, args) ? loadTabs() : [];
-    process.exit(runHc([command, ...resolveArgs(command, args, tabs)]));
+    const resolved = resolveArgs(command, args, tabs);
+    // The default output is human-readable text, JSON only with --json: `ls`,
+    // `get` and `keys` render text without the flag and forward hc's JSON with
+    // it. Every other command passes through unchanged either way.
+    if (!args.includes("--json") && (command === "ls" || command === "get" || command === "keys")) {
+      process.exit(runTextCommand(command, resolved));
+    }
+    process.exit(runHc([command, ...resolved]));
   }
 } catch (e) {
   process.exit(reportError(e, args));
@@ -80,13 +90,14 @@ function hcVersion(flag: string): string {
 }
 
 /**
- * Prints hcx's own error and returns its exit code. With `--json` or a piped stderr
- * the error follows hc's `{"error":{"kind","message","hint"}}` shape on stderr;
- * otherwise it is the human `hcx: <message>` line.
+ * Prints hcx's own error and returns its exit code. With `--json` the error
+ * follows hc's `{"error":{"kind","message","hint"}}` shape on stderr;
+ * otherwise it is the human `hcx: <message>` line, with a `hint: <hint>`
+ * second line when there is one. Exit codes never depend on the flag.
  */
 function reportError(e: unknown, args: string[]): number {
   const code = e instanceof HcxError ? e.exitCode : 1;
-  if (e instanceof HcxError && (args.includes("--json") || !process.stderr.isTTY)) {
+  if (e instanceof HcxError && args.includes("--json")) {
     const body: { error: { kind: string; message: string; hint?: string } } = {
       error: { kind: e.kind, message: e.message },
     };
@@ -95,5 +106,6 @@ function reportError(e: unknown, args: string[]): number {
     return code;
   }
   console.error(`hcx: ${e instanceof HcxError ? e.message : String(e)}`);
+  if (e instanceof HcxError && e.hint !== undefined) console.error(`hint: ${e.hint}`);
   return code;
 }

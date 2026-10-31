@@ -4,6 +4,30 @@ Helper over `hc` for Herdr: send messages without the `<hc from>` tag, spawn age
 their own tab, run with no parent by default, and reach terminals by **tab name**.
 Everything else is passed through to `hc` unchanged.
 
+## Output
+
+Default output is human-readable text; JSON is printed only when you pass
+`--json`, for mapping and programmatic use. `hcx send` prints one line,
+`hcx ls` a table, `hcx get` `key: value` lines, `hcx keys` one line;
+`hcx spawn` and `hcx done` keep their text/`--json` split. Errors are text
+(`hcx: <message>`, plus a `hint: <hint>` second line) unless `--json` is
+given. With `--json` every command prints exactly the document it printed
+before 0.5.0, byte for byte.
+
+```sh
+hcx send Vrax "check this"
+sent to Vrax (t10, claude-code): delivered, status idle, turn 4
+
+hcx ls
+ADDRESS AGENT       STATUS TURN WHERE    CWD
+t10     claude-code idle   49   ~ / Vrax /Users/budisantoso
+(+62 hidden finished)
+```
+
+> Breaking in 0.5.0: commands that used to print hc's JSON by default
+> (`send`, `ls`, `get`, `keys`) and hcx errors whenever stderr was piped now
+> print text. Pass `--json` for the old documents.
+
 ## Install
 
 On macOS arm64 nothing extra is needed, it gets a standalone binary; on every
@@ -106,10 +130,11 @@ with a footer that names the sender.
 ### Delivery status (contract 1, versioned)
 
 `hcx send --json` is a versioned machine interface (contract 1; see
-`hcx --version --json`). When hc prints JSON — with `--json`, or by default when
-stdout is piped — `hcx send` adds fields next to hc's own and keeps hc's fields
-(`status`, `turn`, `started`, …) and exit code as they are. The added fields are
-stable within contract 1; new optional fields may be added, none removed:
+`hcx --version --json`). With or without `--json` hcx asks hc for JSON and adds
+fields next to hc's own, keeping hc's fields (`status`, `turn`, `started`, …)
+and exit code as they are. With `--json` it prints the document; without it
+prints one text line with the same words. The added fields are stable within
+contract 1; new optional fields may be added, none removed:
 
 - `delivered`: `true` when the target confirmed, `false` when it confirmed but
   started no turn (`started: false` — see below), `null` when it reports no status,
@@ -133,7 +158,16 @@ hcx send --json Vrax "check this"
 {"status":"idle","turn":4,"started":true,"delivered":true,"route":"hcx","agent":"muse"}
 ```
 
-In a terminal, without `--json`, the human line stays hc's own.
+Without `--json` the same send prints one line — `delivered`, `not delivered`
+or `delivery unconfirmed` with hc's status and turn, plus the note when
+delivery is unconfirmed or started no turn:
+
+```sh
+hcx send Vrax "check this"
+sent to Vrax (t10, claude-code): delivered, status idle, turn 4
+hcx send --no-footer Shell "echo hi"
+sent to Shell (t6, zsh): delivery unconfirmed, status unknown, turn 0: target is a zsh shell; hc reports no turn status
+```
 
 ## `hcx spawn`
 
@@ -251,10 +285,15 @@ terminal's parent; pass `--parent t10` explicitly when you want one.
 ## Everything else
 
 `hcx` with no arguments or `--help` prints hcx's own help. `hcx --version` (`-V`)
-prints `hcx <version>` on the first line and `hc <version>` on the second. Every other
-command is passed straight to `hc` with inherited stdio, so output, stderr and exit
-code are `hc`'s own — including unknown commands (`hcx command-unknown` shows hc's
-error) and `hcx --licenses`, `hcx ls --json`.
+prints `hcx <version>` on the first line and `hc <version>` on the second.
+`hcx ls` prints a table (`ADDRESS`, `AGENT`, `STATUS`, `TURN`, `WHERE`, plus
+`CWD` when a terminal reports one, then a `(+N hidden finished)` footer line),
+`hcx get` prints `key: value` lines, `hcx keys` prints one line; with `--json`
+they forward hc's JSON instead. Anything hcx cannot render sensibly falls back
+to hc's raw output unchanged. Every other command is passed straight to `hc`
+with inherited stdio, so output, stderr and exit code are `hc`'s own —
+including unknown commands (`hcx command-unknown` shows hc's error) and
+`hcx --licenses`, `hcx read Vrax`.
 
 ## Machine contract
 
@@ -262,7 +301,7 @@ error) and `hcx --licenses`, `hcx ls --json`.
 
 ```sh
 hcx --version --json
-{"hcx":"0.4.2","hc":"0.1.15","contract":1,"capabilities":["no-footer","agent-only","json-delivery"]}
+{"hcx":"0.5.0","hc":"0.1.15","contract":1,"capabilities":["no-footer","agent-only","json-delivery"]}
 ```
 
 `contract` is 1 for this interface; `capabilities` lists what this hcx supports:
@@ -274,9 +313,11 @@ of the same contract and stable within contract 1.
 
 ## Errors
 
-hcx's own errors follow hc's shape: with `--json`, or whenever stderr is piped,
-they print `{"error":{"kind","message","hint"}}` on stderr; in a terminal the human
-`hcx: <message>` line stays. Kinds are `ambiguous` (a twin tab or space name),
+hcx's own errors are text by default: `hcx: <message>` on stderr, with a
+`hint: <hint>` second line when there is one. An hc `{"error":…}` document is
+rendered the same way when `--json` is not given. With `--json` both print
+`{"error":{"kind","message","hint"}}` on stderr instead. Exit codes never depend
+on the flag. Kinds are `ambiguous` (a twin tab or space name),
 `usage` (bad flags or targets), `not_found` (an unknown space), `plain_shell`
 (a refused shell or, with `--agent-only`, an unknown kind) and `timeout`
 (a killed `hc send`: the message may have landed, never retry), else `error`.

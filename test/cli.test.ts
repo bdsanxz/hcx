@@ -292,7 +292,7 @@ describe("hcx send delivery status", () => {
     expect(body.note).toBe("target is a zsh shell; hc reports no turn status");
   });
 
-  test("the default output (piped) carries the fields too", () => {
+  test("the default output (piped) is one text line", () => {
     const s = sandbox();
     s.answer("herdr.ls", { out: TABS });
     s.answer("hc.ls", { out: AGENTS });
@@ -300,7 +300,9 @@ describe("hcx send delivery status", () => {
 
     const r = s.run(["send", "Mira", "hello"], { HC_TERMINAL_ID: "t1" });
     expect(r.code).toBe(0);
-    expect(JSON.parse(r.out)).toMatchObject({ turn: 2, delivered: true, route: "hcx", agent: "muse" });
+    expect(r.out).toBe("sent to Mira (t5, muse): delivered, status idle, turn 2\n");
+    // The fields are still computed: hc is asked for JSON even without --json.
+    expect(s.call("hc", "send")?.args).toEqual(["send", "--json", "--", "t5", expect.stringContaining("hello")]);
   });
 
   test("a failed send keeps hc's error bytes and exit code", () => {
@@ -328,7 +330,7 @@ describe("hcx send --no-footer", () => {
 
     const r = s.run(["send", "--no-footer", "--wait", "--force", "--if", "idle", "Mira", text], { HC_TERMINAL_ID: "t1" });
     expect(r.code).toBe(0);
-    expect(JSON.parse(r.out)).toMatchObject({ delivered: true, route: "hcx-raw", agent: "muse" });
+    expect(r.out).toBe("sent to Mira (t5, muse): delivered, status idle, turn 1\n");
 
     const send = s.call("hc", "send");
     expect(send?.args).toEqual(["send", "--wait", "--force", "--if", "idle", "--json", "--", "t5", text]);
@@ -338,10 +340,13 @@ describe("hcx send --no-footer", () => {
   test("--raw is the same flag", () => {
     const s = sandbox();
     s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
     s.answer("hc.send", { out: '{"started":null,"status":null,"turn":0}\n' });
 
     const r = s.run(["send", "Shell", "--raw", "echo hi"]);
-    expect(JSON.parse(r.out).route).toBe("hcx-raw");
+    expect(r.out).toBe(
+      "sent to Shell (t6, zsh): delivery unconfirmed, status unknown, turn 0: target is a zsh shell; hc reports no turn status\n",
+    );
     expect(s.call("hc", "send")?.args.at(-1)).toBe("echo hi");
   });
 
@@ -389,7 +394,7 @@ describe("hcx send --no-footer", () => {
     s.answer("hc.send", { out: '{"started":true,"status":"idle","turn":1}\n' });
 
     const r = s.run(["send", "Mira", "hello"], { HC_TERMINAL_ID: "t1" });
-    expect(JSON.parse(r.out).route).toBe("hcx");
+    expect(r.out).toBe("sent to Mira (t5, muse): delivered, status idle, turn 1\n");
     const send = s.call("hc", "send");
     expect(send?.args.at(-1)).toBe('hello\n\n— from Lead · reply: hcx send Lead "..."');
     expect(send?.caller).toBeNull();
@@ -509,12 +514,7 @@ describe("hcx spawn opencode --model", () => {
 
     const r = s.run(["spawn", "opencode", "--model", "vikey/no-such-model", "--name", "Probe", "--folder", s.folder()]);
     expect(r.code).toBe(1);
-    expect(JSON.parse(r.err)).toEqual({
-      error: {
-        kind: "error",
-        message: 'unknown opencode model "vikey/no-such-model"; run opencode and pick one with /models',
-      },
-    });
+    expect(r.err).toBe('hcx: unknown opencode model "vikey/no-such-model"; run opencode and pick one with /models\n');
     expect(s.calls().some((c) => c.tool === "opencode" && c.args[1] === "session.create")).toBe(false);
     expect(s.call("herdr-app", "do")).toBeUndefined();
   });
@@ -525,7 +525,7 @@ describe("hcx spawn opencode --model", () => {
 
     const r = s.run(["spawn", "opencode", "--model", "nope/deepseek-v4-flash", "--name", "Probe", "--folder", s.folder()]);
     expect(r.code).toBe(1);
-    expect(JSON.parse(r.err).error.message).toContain('unknown opencode model "nope/deepseek-v4-flash"');
+    expect(r.err).toContain('hcx: unknown opencode model "nope/deepseek-v4-flash"');
     expect(s.calls().some((c) => c.tool === "opencode" && c.args[1] === "session.create")).toBe(false);
     expect(s.call("herdr-app", "do")).toBeUndefined();
   });
@@ -536,7 +536,7 @@ describe("hcx spawn opencode --model", () => {
 
     const r = s.run(["spawn", "opencode", "--model", "anthropic/claude-sonnet-4", "--name", "Probe", "--folder", s.folder()]);
     expect(r.code).toBe(1);
-    expect(JSON.parse(r.err).error.message).toContain('opencode model "anthropic/claude-sonnet-4" is disabled');
+    expect(r.err).toContain('hcx: opencode model "anthropic/claude-sonnet-4" is disabled');
     expect(s.calls().some((c) => c.tool === "opencode" && c.args[1] === "session.create")).toBe(false);
     expect(s.call("herdr-app", "do")).toBeUndefined();
   });
@@ -547,7 +547,7 @@ describe("hcx spawn opencode --model", () => {
 
     const r = s.run(["spawn", "opencode", "--model", model, "--variant", "max", "--name", "Probe", "--folder", s.folder()]);
     expect(r.code).toBe(1);
-    expect(JSON.parse(r.err).error.message).toContain(`unknown variant "max" for ${model}`);
+    expect(r.err).toContain(`hcx: unknown variant "max" for ${model}`);
     expect(r.err).toContain("available: low, medium, high");
     expect(s.calls().some((c) => c.tool === "opencode" && c.args[1] === "session.create")).toBe(false);
     expect(s.call("herdr-app", "do")).toBeUndefined();
@@ -651,7 +651,7 @@ describe("hcx done", () => {
   test("no tab is a usage error", () => {
     const r = sandbox().run(["done"]);
     expect(r.code).toBe(2);
-    expect(JSON.parse(r.err)).toEqual({ error: { kind: "usage", message: "usage: hcx done [--self] [--json] <tab>..." } });
+    expect(r.err).toBe("hcx: usage: hcx done [--self] [--json] <tab>...\n");
   });
 
   test("-h and --help print help, and other flags are refused", () => {
@@ -662,7 +662,7 @@ describe("hcx done", () => {
     }
     const r = sandbox().run(["done", "--force", "Mira"]);
     expect(r.code).toBe(2);
-    expect(JSON.parse(r.err).error.kind).toBe("usage");
+    expect(r.err).toBe('hcx: unknown flag "--force"; usage: hcx done [--self] [--json] <tab>...\n');
   });
 
   test("refuses its own terminal unless --self is given", () => {
@@ -725,7 +725,8 @@ describe("passthrough name resolution", () => {
 
     const r = s.run(["get", "Mira"]);
     expect(r.code).toBe(0);
-    expect(s.call("hc", "get")?.args).toEqual(["get", "t5"]);
+    // hcx asks hc for JSON so it can render text; the tab lookup still applies.
+    expect(s.call("hc", "get")?.args).toEqual(["get", "--json", "t5"]);
   });
 });
 
@@ -749,9 +750,7 @@ describe("hcx send twin names", () => {
 
     const r = s.run(["send", "Twin", "hello"]);
     expect(r.code).toBe(1);
-    expect(JSON.parse(r.err)).toEqual({
-      error: { kind: "ambiguous", message: 'tab name "Twin" is ambiguous; use an address like t7' },
-    });
+    expect(r.err).toBe('hcx: tab name "Twin" is ambiguous; use an address like t7\n');
     expect(s.calls().some((c) => c.tool === "hc" && c.args[0] === "send")).toBe(false);
   });
 });
@@ -775,8 +774,7 @@ describe("hcx spawn guards", () => {
 
     const r = s.run(["spawn", "muse", "--name", "Mira", "--folder", s.folder()]);
     expect(r.code).toBe(2);
-    expect(JSON.parse(r.err).error).toMatchObject({ kind: "usage" });
-    expect(JSON.parse(r.err).error.message).toContain('tab name "Mira" is already used by t5');
+    expect(r.err).toBe('hcx: tab name "Mira" is already used by t5; pick another --name\n');
     expect(s.call("herdr-app", "do")).toBeUndefined();
   });
 
@@ -786,7 +784,8 @@ describe("hcx spawn guards", () => {
 
     const r = s.run(["spawn", "muse", "--name", "--json"]);
     expect(r.code).toBe(2);
-    expect(JSON.parse(r.err).error).toMatchObject({ kind: "usage", message: "--name needs a value" });
+    // --json itself is the bad value, so the error follows the --json contract.
+    expect(JSON.parse(r.err)).toEqual({ error: { kind: "usage", message: "--name needs a value" } });
     expect(s.call("herdr-app", "do")).toBeUndefined();
   });
 
@@ -796,8 +795,7 @@ describe("hcx spawn guards", () => {
 
     const r = s.run(["spawn", "pi", "--space", "nope", "--name", "Fresh", "--folder", s.folder()]);
     expect(r.code).toBe(3);
-    expect(JSON.parse(r.err).error).toMatchObject({ kind: "not_found" });
-    expect(JSON.parse(r.err).error.message).toContain('no space "nope"');
+    expect(r.err).toContain('hcx: no space "nope"');
     expect(s.call("herdr-app", "do")).toBeUndefined();
   });
 
@@ -853,11 +851,11 @@ describe("hcx spawn guards", () => {
 
     const named = s.run(["spawn", "muse", "--name", "Fresh", "--folder", s.folder("work-a")]);
     expect(named.code).toBe(1);
-    expect(JSON.parse(named.err).error.message).toContain('could not check --name "Fresh"');
+    expect(named.err).toContain('hcx: could not check --name "Fresh"');
 
     const spaced = s.run(["spawn", "pi", "--space", "SWE", "--folder", s.folder("work-b")]);
     expect(spaced.code).toBe(1);
-    expect(JSON.parse(spaced.err).error.message).toContain('could not list spaces for --space "SWE"');
+    expect(spaced.err).toContain('hcx: could not list spaces for --space "SWE"');
   });
 
   test("the auto-naming poll picks up a real name", () => {
@@ -1074,7 +1072,7 @@ describe("hcx spawn agents file", () => {
       XDG_CONFIG_HOME: xdg,
     });
     expect(missing.code).toBe(2);
-    expect(JSON.parse(missing.err).error.message).toContain("unknown agent");
+    expect(missing.err).toContain('hcx: unknown agent "xdger"');
   });
 
   test("a broken agents file does not break send, done or pass-through", () => {
@@ -1092,7 +1090,7 @@ describe("hcx spawn agents file", () => {
     expect(s.run(["done", "Mira"], env).code).toBe(0);
     const get = s.run(["get", "Mira"], env);
     expect(get.code).toBe(0);
-    expect(s.call("hc", "get")?.args).toEqual(["get", "t5"]);
+    expect(s.call("hc", "get")?.args).toEqual(["get", "--json", "t5"]);
   });
 
   test("--help lists configured agents and the file path", () => {
@@ -1143,5 +1141,291 @@ describe("hcx send timeout", () => {
     expect(body.error.kind).toBe("timeout");
     expect(body.error.message).toContain("may have landed");
     expect(body.error.message).toContain("do not retry");
+    expect(body.error.hint).toBe("read before resending; never retry a timed-out send blindly");
+  });
+
+  test("without --json the timeout is text with a hint line", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.send", { out: '{"started":true,"status":"idle","turn":1}\n', delay: "500" });
+
+    const r = s.run(["send", "Mira", "hello"], { HCX_SEND_TIMEOUT_MS: "50" });
+    expect(r.code).toBe(1);
+    expect(r.err).toBe(
+      "hcx: hc send timed out after 50 ms; the message may have landed, do not retry automatically\n" +
+        "hint: read before resending; never retry a timed-out send blindly\n",
+    );
+  });
+});
+
+describe("hcx send text output", () => {
+  test("a confirmed send that started no turn warns against resending", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.send", { out: '{"started":false,"status":"idle","turn":3}\n' });
+
+    const r = s.run(["send", "Mira", "hello"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(
+      "sent to Mira (t5, muse): not delivered, status idle, turn 3: did not start a turn; it may still have arrived, read before resending\n",
+    );
+  });
+
+  test("an unconfirmed shell send names the note and unknown fields", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.send", { out: '{"started":null,"status":null,"turn":0}\n' });
+
+    const r = s.run(["send", "--no-footer", "Shell", "hello"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(
+      "sent to Shell (t6, zsh): delivery unconfirmed, status unknown, turn 0: target is a zsh shell; hc reports no turn status\n",
+    );
+  });
+
+  test("a raw send to an address names it twice and skips the name lookup", () => {
+    const s = sandbox();
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.send", { out: '{"started":null,"status":null,"turn":0}\n' });
+
+    const r = s.run(["send", "--no-footer", "t6", "echo hi"], { HC_TERMINAL_ID: "t1" });
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(
+      "sent to t6 (t6, zsh): delivery unconfirmed, status unknown, turn 0: target is a zsh shell; hc reports no turn status\n",
+    );
+    expect(s.calls().some((c) => c.tool === "herdr-app")).toBe(false);
+  });
+});
+
+describe("machine consumers read --json (0.5.0 regression)", () => {
+  test("send --agent-only --no-footer --json is byte for byte today's document", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.send", { out: '{"started":true,"status":"idle","turn":3}\n' });
+
+    const r = s.run(["send", "--agent-only", "--no-footer", "--json", "Mira", "hello"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe('{"started":true,"status":"idle","turn":3,"delivered":true,"route":"hcx-raw","agent":"muse"}\n');
+    expect(s.call("hc", "send")?.args).toEqual(["send", "--json", "--", "t5", "hello"]);
+  });
+
+  test("hcx --version --json is byte for byte today's contract", () => {
+    const s = sandbox();
+    s.answer("hc.version", { out: "hc 9.9.9\n" });
+
+    const r = s.run(["--version", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe('{"hcx":"0.5.0","hc":"9.9.9","contract":1,"capabilities":["no-footer","agent-only","json-delivery"]}\n');
+  });
+
+  test("hcx ls --json forwards hc's bytes", () => {
+    const s = sandbox();
+    const listing = '{"hidden_finished":1,"terminals":[{"address":"t5","agent":"muse","status":"idle","turn":3}]}\n';
+    s.answer("hc.ls", { out: listing });
+
+    const r = s.run(["ls", "--json"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(listing);
+  });
+});
+
+describe("hcx ls text output", () => {
+  const LISTING = JSON.stringify({
+    hidden_finished: 1,
+    terminals: [
+      { address: "t5", agent: "muse", cwd: "/repo", state: "live", status: "idle", turn: 3, where: "SWE / Mira" },
+      { address: "t6", agent: "zsh", cwd: "/repo", state: "live", turn: 0, where: "SWE / Shell" },
+    ],
+  });
+
+  test("prints a table with a hidden-finished footer", () => {
+    const s = sandbox();
+    s.answer("hc.ls", { out: LISTING });
+
+    const r = s.run(["ls"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(
+      "ADDRESS AGENT STATUS TURN WHERE       CWD\n" +
+        "t5      muse  idle   3    SWE / Mira  /repo\n" +
+        "t6      zsh   -      0    SWE / Shell /repo\n" +
+        "(+1 hidden finished)\n",
+    );
+  });
+
+  test("omits CWD when no terminal reports one, and the footer when none are hidden", () => {
+    const s = sandbox();
+    s.answer("hc.ls", {
+      out: JSON.stringify({
+        hidden_finished: 0,
+        terminals: [{ address: "t5", agent: "muse", state: "live", status: "idle", turn: 3, where: "SWE / Mira" }],
+      }),
+    });
+
+    const r = s.run(["ls"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe("ADDRESS AGENT STATUS TURN WHERE\n" + "t5      muse  idle   3    SWE / Mira\n");
+  });
+
+  test("unparseable output falls back to hc's raw bytes", () => {
+    const s = sandbox();
+    s.answer("hc.ls", { out: "not json at all\n" });
+
+    const r = s.run(["ls"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe("not json at all\n");
+  });
+
+  test("an hc error document is text with hc's exit code", () => {
+    const s = sandbox();
+    s.answer("hc.ls", {
+      err: '{"error":{"hint":"see `hc ls --all`","kind":"not_found","message":"gone"}}\n',
+      exit: 3,
+    });
+
+    const r = s.run(["ls"]);
+    expect(r.code).toBe(3);
+    expect(r.out).toBe("");
+    expect(r.err).toBe("hcx: gone\nhint: see `hc ls --all`\n");
+  });
+
+  test("an hc error keeps its bytes and exit code with --json", () => {
+    const s = sandbox();
+    const body = '{"error":{"hint":"see `hc ls --all`","kind":"not_found","message":"gone"}}\n';
+    s.answer("hc.ls", { out: body, exit: 3 });
+
+    const r = s.run(["ls", "--json"]);
+    expect(r.code).toBe(3);
+    expect(r.out).toBe(body);
+  });
+});
+
+describe("hcx get text output", () => {
+  test("prints key: value lines", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.get.t5", { out: '{"address":"t5","agent":"muse","status":"idle","turn":3}\n' });
+
+    const r = s.run(["get", "Mira"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe("address: t5\nagent: muse\nstatus: idle\nturn: 3\n");
+  });
+
+  test("--json forwards hc's bytes", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    const body = '{"address":"t5","agent":"muse","status":"idle","turn":3}\n';
+    s.answer("hc.get.t5", { out: body });
+
+    const r = s.run(["get", "--json", "Mira"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe(body);
+  });
+
+  test("unparseable output falls back to hc's raw bytes", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.get.t5", { out: "not json at all\n" });
+
+    const r = s.run(["get", "Mira"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe("not json at all\n");
+  });
+});
+
+describe("hc error documents are text by default", () => {
+  const NOT_FOUND = '{"error":{"hint":"see `hc ls --all`","kind":"not_found","message":"no terminal \\"t9999\\""}}\n';
+  const TEXT = 'hcx: no terminal "t9999"\nhint: see `hc ls --all`\n';
+
+  test("send renders the stdout document as text, same exit code", () => {
+    const s = sandbox();
+    s.answer("hc.send", { out: NOT_FOUND, exit: 3 });
+
+    const r = s.run(["send", "--no-footer", "t9999", "x"]);
+    expect(r.code).toBe(3);
+    expect(r.out).toBe("");
+    expect(r.err).toBe(TEXT);
+  });
+
+  test("send reads the document from stderr too", () => {
+    const s = sandbox();
+    s.answer("hc.send", { err: NOT_FOUND, exit: 3 });
+
+    const r = s.run(["send", "--no-footer", "t9999", "x"]);
+    expect(r.code).toBe(3);
+    expect(r.out).toBe("");
+    expect(r.err).toBe(TEXT);
+  });
+
+  test("send keeps hc's bytes with --json", () => {
+    const s = sandbox();
+    s.answer("hc.send", { out: NOT_FOUND, err: NOT_FOUND, exit: 3 });
+
+    const r = s.run(["send", "--json", "--no-footer", "t9999", "x"]);
+    expect(r.code).toBe(3);
+    expect(r.out).toBe(NOT_FOUND);
+    expect(r.err).toBe(NOT_FOUND);
+  });
+
+  test("get renders the document as text, same exit code", () => {
+    const s = sandbox();
+    s.answer("hc.get.t9999", { err: NOT_FOUND, exit: 3 });
+
+    const r = s.run(["get", "t9999"]);
+    expect(r.code).toBe(3);
+    expect(r.out).toBe("");
+    expect(r.err).toBe(TEXT);
+  });
+
+  test("get keeps hc's bytes with --json", () => {
+    const s = sandbox();
+    s.answer("hc.get.t9999", { err: NOT_FOUND, exit: 3 });
+
+    const r = s.run(["get", "--json", "t9999"]);
+    expect(r.code).toBe(3);
+    expect(r.err).toBe(NOT_FOUND);
+  });
+
+  test("keys renders the document as text, same exit code", () => {
+    const s = sandbox();
+    s.answer("keys.t9999", { err: NOT_FOUND, exit: 3 });
+
+    const r = s.run(["keys", "t9999", "enter"]);
+    expect(r.code).toBe(3);
+    expect(r.out).toBe("");
+    expect(r.err).toBe(TEXT);
+  });
+
+  test("keys keeps hc's bytes with --json", () => {
+    const s = sandbox();
+    s.answer("keys.t9999", { err: NOT_FOUND, exit: 3 });
+
+    const r = s.run(["keys", "--json", "t9999", "enter"]);
+    expect(r.code).toBe(3);
+    expect(r.err).toBe(NOT_FOUND);
+  });
+});
+
+describe("hcx keys text output", () => {
+  test("prints one line naming the resolved terminal", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+
+    const r = s.run(["keys", "Mira", "enter"]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe("sent keys to t5\n");
+    expect(s.call("hc", "keys")?.args).toEqual(["keys", "--json", "t5", "enter"]);
+  });
+
+  test("--json forwards hc's bytes", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+
+    const r = s.run(["keys", "--json", "Mira", "enter"]);
+    expect(r.code).toBe(0);
+    expect(r.err).toBe("");
   });
 });

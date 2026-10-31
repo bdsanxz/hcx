@@ -30,8 +30,13 @@ function answer(name: string): number {
 if (tool === "hc") {
   const [command, ...rest] = args;
   if (command === "ls") process.exit(answer("hc.ls"));
-  if (command === "get") process.exit(answer(`hc.get.${rest[0]}`));
+  // hcx asks for JSON after the command (`hc get --json t5`); the fixture is
+  // still named for the terminal.
+  if (command === "get") process.exit(answer(`hc.get.${rest[0] === "--json" ? rest[1] : rest[0]}`));
   if (command === "send") process.exit(answer("hc.send"));
+  // hcx asks for JSON after the command (`hc keys --json t5 enter`); the fixture
+  // is still named for the terminal.
+  if (command === "keys") process.exit(answer(`keys.${rest[0] === "--json" ? rest[1] : rest[0]}`));
   if (command === "kill" || command === "rm") process.exit(answer(`${command}.${rest[0]}`));
   if (command === "--version" || command === "-V") process.exit(answer("hc.version"));
   process.exit(0);

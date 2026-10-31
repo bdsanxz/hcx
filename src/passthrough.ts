@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
-import { formatTimeout, HcxError } from "./lib";
+import { firstPositional, formatTimeout, HcxError, isRecord } from "./lib";
+import { parseErrorDoc, renderGetLines, renderLsTable, reportHcError } from "./text";
 
 /** Signal name → number, for the 128+n exit convention. */
 const SIGNAL_NUMBERS: Record<string, number> = {
@@ -51,6 +52,60 @@ export function sendTimeoutError(timeoutMs: number): HcxError {
     `hc send timed out after ${formatTimeout(timeoutMs)}; the message may have landed, do not retry automatically`,
     { kind: "timeout", hint: "read before resending; never retry a timed-out send blindly" },
   );
+}
+
+/**
+ * Runs `hc ls|get|keys` for the default text output: hc is asked for JSON
+ * (every hc command takes `--json`) and the result renders as text. An hc
+ * `{"error":...}` document renders as hcx's own text error with hc's exit
+ * code. Anything else hcx cannot render sensibly — output of an unknown shape —
+ * falls back to hc's raw bytes and exit code, so data is never hidden.
+ */
+export function runTextCommand(command: "ls" | "get" | "keys", args: string[]): number {
+  const p = spawnSync("hc", [command, "--json", ...args], { encoding: "utf8" });
+  if (p.error) throw p.error;
+  // An hc error document is text by default (same exit code); with --json the
+  // caller forwards hc's bytes instead. Streams that are not the document are
+  // still forwarded.
+  const errDoc = parseErrorDoc(p.stdout) ?? parseErrorDoc(p.stderr);
+  if (errDoc) {
+    if (p.stderr && !parseErrorDoc(p.stderr)) process.stderr.write(p.stderr);
+    if (p.stdout && !parseErrorDoc(p.stdout)) process.stdout.write(p.stdout);
+    reportHcError(errDoc);
+    return p.status ?? 1;
+  }
+  if (p.stderr) process.stderr.write(p.stderr);
+  if (p.status !== 0) {
+    if (p.stdout) process.stdout.write(p.stdout);
+    return p.status ?? 1;
+  }
+  const rendered = renderCommandText(command, args, p.stdout);
+  // A rendered line prints even when hc said nothing (a successful `keys`
+  // ack is empty under the fake tools); otherwise hc's own bytes are kept.
+  if (rendered !== null) process.stdout.write(rendered === "" ? "\n" : rendered + "\n");
+  else if (p.stdout) process.stdout.write(p.stdout);
+  return 0;
+}
+
+/**
+ * The text for a successful `hc ls|get|keys --json` call, or null when it
+ * cannot be rendered and hc's raw output must be kept.
+ */
+function renderCommandText(command: "ls" | "get" | "keys", args: string[], stdout: string): string | null {
+  if (command === "keys") {
+    // A successful `hc keys` pressed the keys; its ack (`{"status","turn"}`)
+    // carries nothing to show, so the line names the terminal instead.
+    const i = firstPositional("keys", args);
+    return i < 0 ? null : `sent keys to ${args[i]}`;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(stdout) as unknown;
+  } catch {
+    return null;
+  }
+  if (!isRecord(value) || "error" in value) return null;
+  return command === "ls" ? renderLsTable(value) : renderGetLines(value);
 }
 
 /** Runs `hc` with this process's stdio and returns its exit code (128+n on a signal). */

@@ -12,7 +12,8 @@ import {
   sendTimeoutMs,
   withFooter,
 } from "./lib";
-import { isTimeoutError, runHc, sendTimeoutError } from "./passthrough";
+import { isTimeoutError, sendTimeoutError } from "./passthrough";
+import { formatSendLine, parseErrorDoc, reportHcError } from "./text";
 
 export function send(args: string[]): number {
   // `hcx send --help` is hcx's own help (hc's omits --no-footer and the footer).
@@ -82,22 +83,28 @@ export function send(args: string[]): number {
   const text = plan.raw ? plan.text : withFooter(plan.text, me, tabs);
   // Without HC_TERMINAL_ID the core has no caller, so it adds no <hc from> tag.
   const { HC_TERMINAL_ID: _caller, ...env } = process.env;
-  // `--` keeps a text starting with `-` out of hc's flags.
-  const invocation = ["send", ...plan.flags, "--", address, text];
 
-  // hc prints JSON with --json, and by default when its stdout is piped. Only then can
-  // the delivery fields join the result; in a terminal the human line stays hc's own.
+  // The default output is text, JSON only with --json. Either way hc is asked for
+  // JSON (it prints that when piped) so the delivery fields join the result;
+  // without --json the fields render as one text line instead of the document.
   // The send itself is killed after the send timeout (--timeout stays hc's own wait
   // timeout and is passed through). A killed send may still have landed: never retry.
-  if (!plan.flags.includes("--json") && process.stdout.isTTY) {
-    return runHc(invocation, env, timeoutMs);
-  }
-
-  const flags = plan.flags.includes("--json") ? plan.flags : [...plan.flags, "--json"];
+  const wantJson = plan.flags.includes("--json");
+  const flags = wantJson ? plan.flags : [...plan.flags, "--json"];
+  // `--` keeps a text starting with `-` out of hc's flags.
   const p = spawnSync("hc", ["send", ...flags, "--", address, text], { env, encoding: "utf8", timeout: timeoutMs });
   if (p.error) {
     if (isTimeoutError(p.error)) throw sendTimeoutError(timeoutMs);
     throw p.error;
+  }
+  // An hc error document is text by default (same exit code); with --json hc's
+  // bytes are kept. Streams that are not the document are still forwarded.
+  const errDoc = parseErrorDoc(p.stdout) ?? parseErrorDoc(p.stderr);
+  if (errDoc && !wantJson) {
+    if (p.stderr && !parseErrorDoc(p.stderr)) process.stderr.write(p.stderr);
+    if (p.stdout && !parseErrorDoc(p.stdout)) process.stdout.write(p.stdout);
+    reportHcError(errDoc);
+    return p.status ?? 1;
   }
   if (p.stderr) process.stderr.write(p.stderr);
   const result = parseSendResult(p.stdout);
@@ -114,7 +121,21 @@ export function send(args: string[]): number {
     program = found.program;
   }
   const fields = deliveryFields(result, kind, route, program);
-  console.log(JSON.stringify({ ...result, ...fields }));
+  if (wantJson) {
+    console.log(JSON.stringify({ ...result, ...fields }));
+  } else {
+    console.log(
+      formatSendLine({
+        target: plan.target,
+        address,
+        agent: kind,
+        delivered: fields.delivered,
+        status: result.status,
+        turn: result.turn,
+        ...(fields.note !== undefined ? { note: fields.note } : {}),
+      }),
+    );
+  }
   return 0;
 }
 
