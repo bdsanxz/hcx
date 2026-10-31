@@ -29,3 +29,4 @@ Every issue reported against `hcx` is logged here first, then worked. Newest las
 | 23 | 2026-10-31 | owner review | 0.2.0 | Raw sends (`--no-footer`) to a terminal address still call `herdr-app ls` although no sender name or resolution is needed. | Fixed in 0.3.0 |
 | 24 | 2026-10-31 | owner review | 0.2.0 | No machine-readable version/capability check and the `send --json` fields are not a documented versioned interface. | Fixed in 0.3.0 |
 | 25 | 2026-10-31 | owner request | 0.3.0 | `hcx spawn` agents are a hardcoded list, so `agy`, `qoder` and user agents need a code change to run. | Fixed in 0.4.0 |
+| 26 | 2026-10-31 | owner request | 0.4.0 | a qoder tab behind a shell wrapper is seen as a plain shell (`qodercli-1.1.81` foreground), so `hcx send --agent-only` refuses it. | Fixed in 0.4.1 |

@@ -83,11 +83,16 @@ export function loadAgents(): Map<string, string> {
 }
 
 /**
- * Agents hcx recognises in the foreground of a shell wrapper: a shell kind becomes
- * the foreground program only when it names one of these. Anything else the shell
+ * A foreground basename (already lower-cased by `foregroundName`) mapped to the
+ * agent kind it runs. `opencode` runs opencode; `qodercli` with an optional
+ * `-<version>` suffix (e.g. `qodercli-1.1.81`) runs qoder. Anything else the shell
  * runs stays a shell tab and is reported as the foreground program instead.
  */
-const KNOWN_FOREGROUND_AGENTS = new Set(["opencode"]);
+export function resolveForegroundAgent(foreground: string): string | null {
+  if (foreground === "opencode") return "opencode";
+  if (/^qodercli(-[0-9][0-9a-z.+-]*)?$/i.test(foreground)) return "qoder";
+  return null;
+}
 
 /** The target's kind and, when the kind stays a shell, its foreground program. */
 export interface KindAndProgram {
@@ -98,7 +103,7 @@ export interface KindAndProgram {
 /**
  * The target's agent kind, seeing through the shell wrapper hc reports for tabs that
  * run an agent behind a login shell: a kind that is not a shell is used as is; a shell
- * kind becomes the foreground program only when it names a known agent (`opencode`).
+ * kind becomes the agent kind the foreground program maps to (`opencode`, `qoder`).
  * Any failure of `hc get` or unparseable JSON keeps the shell kind, so a plain shell
  * is never mistaken for an agent.
  */
@@ -107,7 +112,10 @@ export function effectiveKindAndProgram(agents: Map<string, string>, address: st
   if (agent === null) return { kind: null, program: null };
   if (!isShellKind(agent)) return { kind: agent, program: null };
   const foreground = foregroundName(address);
-  if (foreground && KNOWN_FOREGROUND_AGENTS.has(foreground)) return { kind: foreground, program: null };
+  if (foreground) {
+    const resolved = resolveForegroundAgent(foreground);
+    if (resolved) return { kind: resolved, program: null };
+  }
   return { kind: agent, program: foreground };
 }
 

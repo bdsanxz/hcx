@@ -44,6 +44,7 @@ import {
   withFooter,
 } from "../src/lib";
 import { isTimeoutError, sendTimeoutError } from "../src/passthrough";
+import { resolveForegroundAgent } from "../src/herdr";
 
 const ls = {
   spaces: [
@@ -377,6 +378,18 @@ describe("delivery fields", () => {
 test("parseTabs survives missing data", () => {
   expect(parseTabs(null)).toEqual([]);
   expect(parseTabs({ spaces: [{}] })).toEqual([]);
+});
+
+describe("resolveForegroundAgent", () => {
+  test("maps opencode and versioned qodercli to their agent kinds", () => {
+    expect(resolveForegroundAgent("opencode")).toBe("opencode");
+    expect(resolveForegroundAgent("qodercli")).toBe("qoder");
+    expect(resolveForegroundAgent("qodercli-1.1.81")).toBe("qoder");
+    expect(resolveForegroundAgent("QODERCLI-2")).toBe("qoder");
+  });
+  test("leaves anything else as a shell foreground", () => {
+    for (const name of ["qodercliX", "qoder", "zsh", "vim", ""]) expect(resolveForegroundAgent(name)).toBeNull();
+  });
 });
 
 describe("parseSpawn", () => {

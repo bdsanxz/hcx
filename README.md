@@ -113,11 +113,12 @@ stable within contract 1; new optional fields may be added, none removed:
 
 - `delivered`: `true` when the target confirmed, `false` when it confirmed but
   started no turn (`started: false` — see below), `null` when it reports no status,
-  so nobody can tell (a shell or an opencode TUI).
+  so nobody can tell (a shell, an opencode TUI or a qoder tab).
 - `route`: `hcx` for the untagged footer send, `hcx-raw` for `--no-footer`.
 - `agent`: the target's agent kind. `hc ls` names it directly (by address and by
   terminal name) unless it reports a shell, in which case the foreground program
-  from `hc get` names it only when it is a known agent (`opencode`); any other
+  from `hc get` names it only when it is a known agent (`opencode`, or a versioned
+  `qodercli` such as `qodercli-1.1.81` reported as `qoder`); any other
   foreground program is reported in `program` and the agent keeps its shell kind
   (`zsh`, …).
 - `note`: for `delivered: false`, `did not start a turn; it may still have arrived,
@@ -260,7 +261,7 @@ error) and `hcx --licenses`, `hcx ls --json`.
 
 ```sh
 hcx --version --json
-{"hcx":"0.4.0","hc":"0.1.15","contract":1,"capabilities":["no-footer","agent-only","json-delivery"]}
+{"hcx":"0.4.1","hc":"0.1.15","contract":1,"capabilities":["no-footer","agent-only","json-delivery"]}
 ```
 
 `contract` is 1 for this interface; `capabilities` lists what this hcx supports:

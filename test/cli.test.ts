@@ -6,7 +6,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, unlinkSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { OPENCODE_NOTE } from "../src/lib";
+import { NO_STATUS_NOTE, OPENCODE_NOTE } from "../src/lib";
 import { VERSION } from "../src/version";
 
 const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
@@ -218,6 +218,36 @@ describe("hcx send delivery status", () => {
     expect(body.agent).toBe("opencode");
     expect(body.note).toBe(OPENCODE_NOTE);
     expect(s.call("hc", "get")?.args).toEqual(["get", "t7"]);
+  });
+
+  test("a qoder tab behind a shell wrapper is reported as qoder", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.get.t7", { out: '{"foreground":{"name":"qodercli-1.1.81","argv":["qodercli"],"pid":4}}\n' });
+    s.answer("hc.send", { out: '{"started":null,"status":null,"turn":0}\n' });
+
+    const r = s.run(["send", "--json", "--agent-only", "Bot", "hello"]);
+    expect(r.code).toBe(0);
+    const body = JSON.parse(r.out);
+    expect(body.delivered).toBeNull();
+    expect(body.route).toBe("hcx");
+    expect(body.agent).toBe("qoder");
+    expect(body.note).toBe(NO_STATUS_NOTE);
+    expect(s.call("hc", "get")?.args).toEqual(["get", "t7"]);
+  });
+
+  test("a wrapper running something else stays a plain shell", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.get.t7", { out: '{"foreground":{"name":"qodercliX","argv":["qodercliX"],"pid":5}}\n' });
+    s.answer("hc.send", { out: '{"started":null,"status":null,"turn":0}\n' });
+
+    const r = s.run(["send", "--json", "--agent-only", "Bot", "hello"]);
+    expect(r.code).toBe(4);
+    expect(JSON.parse(r.err).error.kind).toBe("plain_shell");
+    expect(s.calls().some((c) => c.tool === "hc" && c.args[0] === "send")).toBe(false);
   });
 
   test("a non-shell agent is used as is, without asking hc get", () => {
