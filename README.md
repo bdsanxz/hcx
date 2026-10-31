@@ -24,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/bdsanxz/hcx/main/install.sh | sh -s
 | --- | --- | --- | --- |
 | `--version vX.Y.Z` | `HCX_VERSION` | `latest` | The release to install. |
 | `--dir DIR` | `HCX_INSTALL_DIR` | `~/.local/bin` | Where the file goes. |
-| `--from-source` | | | Build from the release source with Bun instead of downloading it. |
+| `--from-source` | | | Build a standalone binary from source with Bun instead of downloading it (`latest` builds the default branch, a tag builds that tag). |
 | `--force` | | | Replace the target even when it is a symlink (see below). |
 
 When the target is a symlink — for example `~/.local/bin/hcx` linked to a repo
@@ -43,7 +43,7 @@ bun run build
 cp dist/hcx.js ~/.local/bin/hcx
 ```
 
-Run `hcx --help` to check that it runs. No compile step: `dist/hcx.js` is `src/` bundled with `bun build` for node.
+Run `hcx --help` to check that it runs. `dist/hcx.js` is `src/` bundled with `bun build` for node; `dist/hcx` is the standalone binary from `bun run build:bin`.
 
 ### Uninstall
 
@@ -78,11 +78,18 @@ with a footer that names the sender.
   clears that variable before `hc send`. The cost: `hc wait` and `hc send --wait` no
   longer tie the reply turn to the sender.
 - The footer `— from <tab name> · reply: hcx send <tab name> "..."` is added when
-  `HC_TERMINAL_ID` is set. Don't send to a plain shell with it: it would run the footer
-  as a command. Use `--no-footer` there.
+  `HC_TERMINAL_ID` is set. The reply names the sender's tab only when that name
+  resolves uniquely back to it; otherwise it names the sender's address, which
+  always resolves.
+- `hcx send --help` (and `hcx send <tab> --help`) prints hcx's own send help, not
+  hc's. A text of `--help` still sends after an explicit `--`.
+- Without `--no-footer` a plain shell is refused before anything is typed:
+  `tab "Shell" is a plain shell; use --no-footer to type a command`. Sending there
+  would run the text and the footer as shell commands.
 - `hc send` flags go before the text: `--wait`, `--force`, `--json`, `--if <status>`,
-  `--timeout <seconds>`. Use `--` if the message itself starts with a flag:
-  `hcx send Vrax -- "--wait"`.
+  `--timeout <seconds>`. `hc` always sees `--` before the target and the text, so a
+  text starting with `-` works: `hcx send Vrax -- "- item"`, and a text starting with
+  `--` works after an explicit `--`: `hcx send Vrax -- "--wait"`.
 - `--no-footer` (alias `--raw`) sends the text **exactly as given**: no footer and no
   tag. It works for every target, including a plain shell or an opencode TUI, and
   combines with the other flags: `hcx send --no-footer --if idle Vrax "echo hi"`.
@@ -92,16 +99,20 @@ with a footer that names the sender.
 When hc prints JSON — with `--json`, or by default when stdout is piped — `hcx send`
 adds fields next to hc's own and keeps hc's fields and exit code as they are:
 
-- `delivered`: `true` or `false` when the target reported its status, `null` when it
-  reports no status, so nobody can tell (a shell or an opencode TUI).
-- `route`: `hcx` for the untagged footer send, `hc` for a tagged send, `hcx-raw` for
-  `--no-footer`.
-- `agent`: the target's agent kind. `hc ls` names it directly unless it reports a
-  shell, in which case the foreground program from `hc get` names it (`opencode`, …);
-  a plain shell keeps its shell kind (`zsh`, …).
-- `note`: present when `delivered` is `null`: `opencode reports no turn status` for an
-  opencode target, otherwise `target is an opencode TUI or a shell; hc reports no turn
-  status`.
+- `delivered`: `true` when the target confirmed, `false` when it confirmed but
+  started no turn (`started: false` — see below), `null` when it reports no status,
+  so nobody can tell (a shell or an opencode TUI).
+- `route`: `hcx` for the untagged footer send, `hcx-raw` for `--no-footer`.
+- `agent`: the target's agent kind. `hc ls` names it directly (by address and by
+  terminal name) unless it reports a shell, in which case the foreground program
+  from `hc get` names it only when it is a known agent (`opencode`); any other
+  foreground program is reported in `program` and the agent keeps its shell kind
+  (`zsh`, …).
+- `note`: for `delivered: false`, `did not start a turn; it may still have arrived,
+  read before resending` — do not blindly resend. For `delivered: null`,
+  `opencode reports no turn status` for an opencode target, `target is a <kind>
+  shell; hc reports no turn status` for a known shell kind, otherwise `target is an
+  opencode TUI or a shell; hc reports no turn status`.
 
 ```sh
 hcx send --json Vrax "check this"
@@ -133,9 +144,12 @@ The tab opens in the space of the terminal that runs `hcx spawn` (not whichever 
 
 Tab names never repeat: `--name` is checked against every existing tab (any case) before anything opens, and a name already in use is refused (`tab name "Vrax" is already used by t10; pick another --name`). Without `--name`, the auto-naming mod gives the tab a name that is not in use.
 
-Only `--name`, `--space`, `--folder` (`-C`), `--task` and `--json` are hcx's own; every
-other flag goes to the agent, and `--` forces the rest to the agent. Prints the tab name
-once it is known, so you can reply with `hcx send <name> "..."`.
+`hcx spawn --help` prints spawn help. Only `--name`, `--space`, `--folder` (`-C`),
+`--task` and `--json` are hcx's own; every other flag goes to the agent, and `--`
+forces the rest to the agent. Values take a space or `=`: `--name Review`,
+`--space=SWE`. A value starting with `-` is refused (`--name --json` takes no name).
+`--name` must not look like a terminal address, be all digits, or contain whitespace.
+Prints the tab name once it is known, so you can reply with `hcx send <name> "..."`.
 
 ### OpenCode model
 
@@ -154,27 +168,36 @@ hcx spawn opencode --model vikey/deepseek-v4-flash --variant max
 # unknown variant "max" for vikey/deepseek-v4-flash; available: low, medium, high
 ```
 
-Without `--model`, `opencode` starts as before.
+Without `--model`, `opencode` starts as before. Extra agent flags are kept after
+`--session`: `hcx spawn opencode --model p/m -- --yolo` starts
+`opencode --session <id> --yolo`. When a later step fails after the session exists,
+the error names the session id for cleanup.
 
 ### JSON output
 
 `--json` prints one object instead of the text line: `name`, `terminal`, `agent`,
-`space`, `folder`, plus `model` and `variant` when they were given.
+`space`, `folder`, plus `model` and `variant` when they were given, `tab` when the
+tab id is known, and the opencode `session` id when one was created.
 
 ```sh
 hcx spawn muse --name Review --json
-{"name":"Review","terminal":"t7","agent":"muse","space":"spA","folder":"/repo"}
+{"name":"Review","terminal":"t7","agent":"muse","space":"spA","folder":"/repo","tab":"tab9"}
 ```
 
 ## `hcx done`
 
 ```sh
-hcx done <tab>...
+hcx done [--self] [--json] <tab>...
 ```
 
 Kill each named terminal's program, then remove the terminal. One line per tab
 (`done Mira (t5)`). A tab whose program already finished is still removed; an unknown
 tab is reported on stderr and the other tabs still go. Exits 1 when any tab failed.
+
+`hcx done -h` and `--help` print help; any other flag is refused. A target that
+equals the caller's own terminal (`HC_TERMINAL_ID`) is refused unless `--self` is
+given. `--json` prints one JSON array with one object per tab
+(`{"target","terminal","removed","error"?}`).
 
 ## `hcx run`
 
@@ -193,6 +216,14 @@ prints `hcx <version>` on the first line and `hc <version>` on the second. Every
 command is passed straight to `hc` with inherited stdio, so output, stderr and exit
 code are `hc`'s own — including unknown commands (`hcx command-unknown` shows hc's
 error) and `hcx --licenses`, `hcx ls --json`.
+
+## Errors
+
+hcx's own errors follow hc's shape: with `--json`, or whenever stderr is piped,
+they print `{"error":{"kind","message","hint"}}` on stderr; in a terminal the human
+`hcx: <message>` line stays. Kinds are `ambiguous` (a twin tab or space name),
+`usage` (bad flags or targets) and `not_found` (an unknown space), else `error`.
+Exit codes are 2 for usage, 3 for not_found, 1 otherwise.
 
 ## Build
 

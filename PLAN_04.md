@@ -1,0 +1,32 @@
+# PLAN_04: hcx 0.2.0 - fixes from the Opus review
+
+Source: the review report `/private/tmp/claude-501/-Users-budisantoso-Dev-bdsanxz-SWE/b22ac8cc-e39c-43ce-8990-7eda0c4d7dfc/scratchpad/report-review-hcx.md` (read it fully first; item numbers below refer to it). Speed is fine; this plan is correctness, safety and ergonomics. Do the steps in order, each with tests; keep `bun test` green after each.
+
+## Steps
+
+1. Read the review report, then `README.md`, `ISSUES.md`, every file in `src/` and `test/`, `install.sh`. Add `ISSUES.md` rows 9-19 (one per step 2-12 below, reporter "opus review", version 0.1.5, status "In progress (0.2.0)").
+2. **Leading dash (review 1 + 15).** `send` passes `--` before the address/text to `hc send` in every path, so a text starting with `-` works. `hcx send Vrax --help` and `hcx send --help` print hcx's own send help (including `--no-footer` and the footer behaviour) instead of hc's; a text starting with `--` still works after an explicit `--`. Merge the two near-identical branches of `parseSend`. CLI tests assert the recorded `hc` argv for `--wait` and `- item` texts.
+3. **Shell safety (review 2).** Without `--no-footer`, `send` looks up the target's effective kind BEFORE sending. If it is a plain shell (kind is a shell kind after `effectiveKind`), refuse with exit 2 and `tab "<name>" is a plain shell; use --no-footer to type a command`. If the lookup fails, behave as today. With `--no-footer` nothing changes. Same lookup is reused for the `agent` field (no extra subprocess).
+4. **No stdout in error text (review 3).** `opencodeApi` never uses stdout as error detail: stderr only; for `model.list` only the exit code. Test: stub prints a canary string to stdout and exits 1; the canary must not appear in hcx's output.
+5. **Spawn flags (review 5 + 9).** `spawn --help`/`-h` prints spawn help; accept `--name=X`, `--space=X`, `--folder=X`, `--model=p/m`, `--variant=L`; refuse a value that starts with `-` (`--name --json`); keep extra agent flags for opencode with `--model` (`["opencode","--session",id,...rest]`). Validate `--space` and `--name` BEFORE creating an opencode session; when a later step fails after the session exists, name the session id in the error.
+6. **Names (review 8).** `parseSpawn` refuses names that look like a terminal address, are all digits, or contain whitespace. The footer's reply command uses the sender's address unless its name resolves uniquely back to that address.
+7. **done (review 6).** `hcx done -h/--help` prints help; other flags are refused; when a target equals `HC_TERMINAL_ID` (the caller itself) refuse unless `--self` is given; check and report the `hc kill` result instead of discarding it (an already finished terminal is still fine); add `--json` (one object per tab).
+8. **delivered semantics (review 7 + 12).** For `started: false` add the note `did not start a turn; it may still have arrived, read before resending`. Match `hc ls` on `name` as well as `address` in `loadAgents`. `effectiveKind` reports only known agents from a small list (`opencode`) from the foreground; any other non-shell foreground program is reported as `program` and `agent` stays the shell kind. The unconfirmed note names the real kind (shell vs opencode). Remove the unused `hc` route. README documents the `delivered`/`started` meaning.
+9. **Herdr robustness (review 10).** Typed result from the Herdr loaders; when a protective check could not run (`--name` twin check, `--space` list, footer sender) refuse with a clear message instead of silently skipping; give lookups a 5 s `timeout` (never `hc send --wait`); check `p.error` in `spawn` so a missing `herdr-app` says "herdr-app not found"; `runHc` returns 128+signal. Merge `loadTabs`/`loadSpaces` into one read; replace the `sleep` subprocess in the auto-name poll with `Atomics.wait`.
+10. **Error format (review 11).** `HcxError` carries a `kind` and exit code; with `--json` or piped stderr print hc's `{"error":{"kind","message","hint"}}` shape (kinds `ambiguous`, `usage`, `not_found`), exit codes 2 for usage, 3 for not_found, 1 otherwise. `spawn --json` adds `tab` (the tab id) and the opencode `session` id when known.
+11. **Installer (review 14).** Try the download without a token first and use `gh auth token` only after a 404; never put a token on a command line (use `curl -K -` / env). `--from-source` runs `bun run build:bin` and installs that binary without requiring node; fix the hint at `install.sh:108`, the `latest` source description in README, the `$SRC` cleanup trap, and make `finish` print the installed version. Update `test/install.test.ts` (it locks in the wrong hint).
+12. **Tests (review 16).** Add CLI end-to-end tests for: `hcx run`, passthrough name resolution, duplicate `--name`, `--space` unknown, auto-name polling, `herdr-app do` failure, twin names on send. README: remove the confusing "No compile step" line.
+13. Out of scope: review items 4 (multi-terminal tab routing), 13 caching beyond the merge in step 9, 17 (CI), `--file`/stdin send. Do not do them; list them under "Open questions" in the report with a one-line proposal each.
+14. Bump to 0.2.0, update README and `--help`, `ISSUES.md` rows -> "Fixed in 0.2.0". Run `bunx tsc --noEmit`, `bun test`, `bun run build` and `bun run build:bin` twice (identical sha256 each). Real checks with no side effects only: `node dist/hcx.js --version`, `node dist/hcx.js send --help`, `node dist/hcx.js spawn --help`.
+
+## Rules for the worker
+
+- Work only in `/Users/budisantoso/Dev/bdsanxz/SWE/hcx`. Read every file before changing it. Edit in place; never overwrite a file wholesale.
+- All text in the codebase is English. No secrets; never print `opencode api model.list` output or environment values.
+- Stub `hc`/`herdr-app`/`opencode` in tests (see `test/fake-tool.ts`). Do NOT run `hcx send`, `hcx spawn`, `hcx done` against the real system, and do not touch other terminals.
+- No commits, pushes, tags, releases or installs: the lead does those. Do not install over `~/.local/bin/hcx`.
+- Finish with `git diff --stat`.
+
+## Report
+
+Write the report (what changed per step, commands run and output as printed, test counts, sha256 of both builds, open questions) to `/private/tmp/claude-501/-Users-budisantoso-Dev-bdsanxz-SWE/b22ac8cc-e39c-43ce-8990-7eda0c4d7dfc/scratchpad/report-plan04-hcx.md`, then run: `hcx send --no-footer Zytra "plan04-hcx done, report: /private/tmp/claude-501/-Users-budisantoso-Dev-bdsanxz-SWE/b22ac8cc-e39c-43ce-8990-7eda0c4d7dfc/scratchpad/report-plan04-hcx.md"`

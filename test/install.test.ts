@@ -101,16 +101,17 @@ describe("install.sh against a fake release", () => {
     const plain = runInstaller(["--dir", dir], { ...base, PATH: "/usr/bin:/bin:/sbin" });
     expect(plain.code).not.toBe(0);
     expect(plain.err).toContain("node is required");
-    expect(plain.err).not.toContain("--from-source");
+    expect(plain.err).toContain("--from-source");
+    expect(plain.err).toContain("install Bun");
     expect(existsSync(join(dir, "hcx"))).toBe(false);
-    // With Bun around, the error points at --from-source instead.
+    // With Bun around, the error points at --from-source with Bun directly.
     const bun = Bun.which("bun");
     if (bun) {
       const dir2 = mkdtempSync(join(tmpdir(), "hcx-install-"));
       const withBun = runInstaller(["--dir", dir2], { ...base, PATH: `${dirname(bun)}:/usr/bin:/bin:/sbin` });
       expect(withBun.code).not.toBe(0);
       expect(withBun.err).toContain("node is required");
-      expect(withBun.err).toContain("--from-source");
+      expect(withBun.err).toContain("pass --from-source to build a standalone binary with Bun");
       expect(existsSync(join(dir2, "hcx"))).toBe(false);
     }
   });

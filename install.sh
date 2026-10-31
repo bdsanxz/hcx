@@ -7,8 +7,9 @@
 # On macOS arm64 it downloads the standalone `hcx-darwin-arm64` binary; on
 # every other platform it downloads `hcx.js`, which runs with node. The
 # release's SHA256SUMS is always checked before installing into
-# ~/.local/bin/hcx (or --dir). --from-source builds dist/hcx.js from the
-# release source with Bun instead. Run with --help for every option.
+# ~/.local/bin/hcx (or --dir). --from-source builds a standalone binary from
+# source with Bun instead (latest builds the default branch, a tag builds that
+# tag). Run with --help for every option.
 set -eu
 
 REPO="bdsanxz/hcx"
@@ -30,7 +31,8 @@ Usage: install.sh [--version vX.Y.Z] [--dir DIR] [--from-source] [--force]
 
   --version vX.Y.Z  Release to install (default: latest; env HCX_VERSION).
   --dir DIR         Directory for the command (default: ~/.local/bin; env HCX_INSTALL_DIR).
-  --from-source     Build dist/hcx.js from the release source with Bun instead of downloading it.
+  --from-source     Build a standalone binary from source with Bun instead of downloading
+                    it (latest builds the default branch, a tag builds that tag).
   --force           Replace the target even when it is a symlink (see below).
 
 On macOS arm64 the standalone hcx-darwin-arm64 binary is installed; on every
@@ -72,18 +74,31 @@ esac
 
 command -v curl >/dev/null 2>&1 || die "curl is required"
 
-# The token for a private repository: GITHUB_TOKEN, else the GitHub CLI's.
-TOKEN="${GITHUB_TOKEN:-}"
-if [ -z "$TOKEN" ] && command -v gh >/dev/null 2>&1; then
-    TOKEN="$(gh auth token 2>/dev/null || true)"
-fi
+# Tokens for a private repository. The token is only looked up after an
+# unauthenticated request fails with a 404, and it never appears on a command
+# line: curl reads it from its stdin config (`-K -`), git from the environment.
+token() { # token : GITHUB_TOKEN, else the GitHub CLI's, else nothing.
+    if [ -n "${GITHUB_TOKEN:-}" ]; then printf '%s' "$GITHUB_TOKEN"; return 0; fi
+    if command -v gh >/dev/null 2>&1; then gh auth token 2>/dev/null || true; fi
+}
+
+auth_config() { # auth_config : a curl stdin config carrying the token header, or fail.
+    TOKEN="$(token)"
+    [ -n "$TOKEN" ] || return 1
+    printf 'header = "Authorization: Bearer %s"\n' "$TOKEN"
+}
+
+get() { # get <out> <url> [accept] : download url to out, retrying with a token after a 404.
+    if curl -fsSL -H "Accept: ${3:-application/octet-stream}" -o "$1" "$2" 2>/dev/null; then return 0; fi
+    # Only a 404 justifies the token; anything else is a real failure.
+    code="$(curl -sSL -o /dev/null -w "%{http_code}" -H "Accept: ${3:-application/octet-stream}" "$2" 2>/dev/null || true)"
+    [ "$code" = "404" ] || return 1
+    auth_config | curl -fsSL -K - -H "Accept: ${3:-application/octet-stream}" -o "$1" "$2"
+}
 
 api() { # api <path> : GET a GitHub API path, printing the JSON.
-    if [ -n "$TOKEN" ]; then
-        curl -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/$1"
-    else
-        curl -fsSL -H "Accept: application/vnd.github+json" "https://api.github.com/$1"
-    fi
+    get "$TMP/api.json" "https://api.github.com/$1" "application/vnd.github+json" || return 1
+    cat "$TMP/api.json"
 }
 
 asset_url() { # asset_url <release json> <asset name> : the asset's API URL, or nothing.
@@ -93,12 +108,8 @@ asset_url() { # asset_url <release json> <asset name> : the asset's API URL, or 
         index($0, want) { sub(/.*"url": "/, "", url); sub(/".*/, "", url); print url; exit }'
 }
 
-download() { # download <asset API URL> <file>
-    if [ -n "$TOKEN" ]; then
-        curl -fsSL -H "Authorization: Bearer $TOKEN" -H "Accept: application/octet-stream" -o "$2" "$1"
-    else
-        curl -fsSL -H "Accept: application/octet-stream" -o "$2" "$1"
-    fi
+download() { # download <asset API URL> <file> : GET an asset's bytes.
+    get "$2" "$1" "application/octet-stream"
 }
 
 need_node() { # need_node <asset> : die unless node can run the asset.
@@ -107,7 +118,7 @@ need_node() { # need_node <asset> : die unless node can run the asset.
     if command -v bun >/dev/null 2>&1; then
         die "node is required to run hcx.js on this platform ($(uname -s)/$(uname -m)); install node from https://nodejs.org, or pass --from-source to build a standalone binary with Bun"
     else
-        die "node is required to run hcx.js on this platform ($(uname -s)/$(uname -m)); install node from https://nodejs.org"
+        die "node is required to run hcx.js on this platform ($(uname -s)/$(uname -m)); install node from https://nodejs.org, or install Bun from https://bun.sh and pass --from-source to build a standalone binary"
     fi
 }
 
@@ -133,7 +144,8 @@ case ":$PATH:" in
 esac
 
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"; rm -f "$OUT.tmp.$$"' EXIT
+SRC=""
+trap 'rm -rf "$TMP"; [ -n "${SRC:-}" ] && rm -rf "$SRC"; rm -f "$OUT.tmp.$$"' EXIT
 
 install_file() { # install_file <file> : move it to $OUT atomically.
     chmod +x "$1"
@@ -142,15 +154,14 @@ install_file() { # install_file <file> : move it to $OUT atomically.
     mv -f "$OUT.tmp.$$" "$OUT"
 }
 
-finish() { # finish : report the installed command.
+finish() { # finish : report the installed command and its version.
     say "installed $OUT ($VERSION)"
-    "$OUT" --help | head -1
+    "$OUT" --version 2>/dev/null | head -2 || "$OUT" --help | head -1
 }
 
 if [ "$FROM_SOURCE" = 1 ]; then
     command -v git >/dev/null 2>&1 || die "git is required for --from-source"
     command -v bun >/dev/null 2>&1 || die "bun is required for --from-source; install it from https://bun.sh and run again"
-    need_node "hcx.js"
     SRC="$(mktemp -d)"
     if [ "$VERSION" = "latest" ]; then
         # "latest" is not a branch; clone the default branch.
@@ -158,17 +169,19 @@ if [ "$FROM_SOURCE" = 1 ]; then
     else
         CLONE_BRANCH="--branch $VERSION"
     fi
-    if [ -n "$TOKEN" ]; then
+    # shellcheck disable=SC2086
+    if ! git clone --depth 1 $CLONE_BRANCH "https://github.com/$REPO.git" "$SRC/repo" >&2; then
+        # Maybe a private repository: retry with a token from the environment (never argv).
+        TOKEN="$(token)"
+        [ -n "$TOKEN" ] || die "could not clone $REPO $VERSION (a private repository needs GITHUB_TOKEN or gh auth login)"
         # shellcheck disable=SC2086
-        git -c "http.extraHeader=Authorization: Bearer $TOKEN" clone --depth 1 $CLONE_BRANCH "https://github.com/$REPO.git" "$SRC/repo" >&2 || die "could not clone $REPO $VERSION"
-    else
-        # shellcheck disable=SC2086
-        git clone --depth 1 $CLONE_BRANCH "https://github.com/$REPO.git" "$SRC/repo" >&2 || die "could not clone $REPO $VERSION (a private repository needs GITHUB_TOKEN or gh auth login)"
+        GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.extraHeader" GIT_CONFIG_VALUE_0="Authorization: Bearer $TOKEN" \
+            git clone --depth 1 $CLONE_BRANCH "https://github.com/$REPO.git" "$SRC/repo" >&2 \
+            || die "could not clone $REPO $VERSION (a private repository needs GITHUB_TOKEN or gh auth login)"
     fi
-    (cd "$SRC/repo" && bun install >&2 && bun run build >&2) || die "bun install && bun run build failed in the cloned $VERSION source"
-    [ -f "$SRC/repo/dist/hcx.js" ] || die "build did not produce dist/hcx.js"
-    install_file "$SRC/repo/dist/hcx.js"
-    rm -rf "$SRC"
+    (cd "$SRC/repo" && bun install >&2 && bun run build:bin >&2) || die "bun install && bun run build:bin failed in the cloned $VERSION source"
+    [ -f "$SRC/repo/dist/hcx" ] || die "build did not produce dist/hcx"
+    install_file "$SRC/repo/dist/hcx"
     finish
     exit 0
 fi

@@ -11,10 +11,11 @@ const USAGE = `hcx — helper over hc for Herdr
   hcx send [--wait] [--force] [--json] [--if idle|working] [--timeout SECONDS] [--no-footer] <tab-name|tNN> "text"
                                      send without the <hc from> tag, with a sender footer
                                      --no-footer (alias --raw): the text exactly as given
+                                     hcx send --help prints this help, not hc's
   hcx spawn <muse|pi|claude|opencode> [--name N] [--space S] [--folder DIR] [--task TEXT] [--json] [agent flags...]
                                      start the agent in a tab of its own (no parent terminal)
                                      opencode: --model provider/model [--variant LEVEL]
-  hcx done <tab>...                  kill each live terminal, then remove it
+  hcx done [--self] [--json] <tab>...  kill each live terminal, then remove it
   hcx run [hc run args...]           run with --no-parent unless --parent or --no-parent is given
 
 Tab names work anywhere hc takes a <terminal> (get attach read kill rm label keep keys
@@ -52,6 +53,24 @@ try {
     process.exit(runHc([command, ...resolveArgs(command, args, tabs)]));
   }
 } catch (e) {
+  process.exit(reportError(e, args));
+}
+
+/**
+ * Prints hcx's own error and returns its exit code. With `--json` or a piped stderr
+ * the error follows hc's `{"error":{"kind","message","hint"}}` shape on stderr;
+ * otherwise it is the human `hcx: <message>` line.
+ */
+function reportError(e: unknown, args: string[]): number {
+  const code = e instanceof HcxError ? e.exitCode : 1;
+  if (e instanceof HcxError && (args.includes("--json") || !process.stderr.isTTY)) {
+    const body: { error: { kind: string; message: string; hint?: string } } = {
+      error: { kind: e.kind, message: e.message },
+    };
+    if (e.hint !== undefined) body.error.hint = e.hint;
+    console.error(JSON.stringify(body));
+    return code;
+  }
   console.error(`hcx: ${e instanceof HcxError ? e.message : String(e)}`);
-  process.exit(1);
+  return code;
 }

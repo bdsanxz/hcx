@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   HcxError,
+  NOT_STARTED_NOTE,
   NO_STATUS_NOTE,
   OPENCODE_NOTE,
   TERMINAL_COMMANDS,
@@ -17,12 +18,14 @@ import {
   parseSpaces,
   parseTabs,
   pickSpace,
+  replyTarget,
   resolveArgs,
   resolveTarget,
   runArgs,
   sameModel,
   senderName,
   sessionModel,
+  shellNote,
   withFooter,
 } from "../src/lib";
 
@@ -205,6 +208,20 @@ describe("footer", () => {
     expect(senderName("t99", tabs)).toBe("t99");
     expect(withFooter("hello", undefined, tabs)).toBe("hello");
   });
+  test("the reply command uses the address when the name cannot resolve back", () => {
+    const spaced = parseTabs({ spaces: [{ tabs: [{ name: "My Tab", terminals: [{ terminal: "t20" }] }] }] });
+    expect(replyTarget("t20", spaced)).toBe("t20");
+    expect(withFooter("hello", "t20", spaced)).toBe('hello\n\n— from My Tab · reply: hcx send t20 "..."');
+    const numeric = parseTabs({ spaces: [{ tabs: [{ name: "123", terminals: [{ terminal: "t21" }] }] }] });
+    expect(replyTarget("t21", numeric)).toBe("t21");
+    const addressy = parseTabs({ spaces: [{ tabs: [{ name: "t7", terminals: [{ terminal: "t22" }] }] }] });
+    expect(replyTarget("t22", addressy)).toBe("t22");
+    expect(replyTarget("t99", tabs)).toBe("t99");
+  });
+  test("a twin name falls back to the address", () => {
+    expect(replyTarget("t7", tabs)).toBe("t7");
+    expect(withFooter("hello", "t7", tabs)).toBe('hello\n\n— from dup · reply: hcx send t7 "..."');
+  });
 });
 
 describe("delivery fields", () => {
@@ -214,14 +231,26 @@ describe("delivery fields", () => {
       route: "hcx",
       agent: "muse",
     });
-    expect(deliveryFields({ started: false, status: "working", turn: 3 }, "muse", "hcx").delivered).toBe(false);
+    expect(deliveryFields({ started: false, status: "working", turn: 3 }, "muse", "hcx")).toEqual({
+      delivered: false,
+      route: "hcx",
+      agent: "muse",
+      note: NOT_STARTED_NOTE,
+    });
   });
-  test("no status leaves delivery unconfirmed, with a note", () => {
+  test("no status leaves delivery unconfirmed, with a note naming the kind", () => {
     expect(deliveryFields({ started: null, status: null, turn: 0 }, "zsh", "hcx")).toEqual({
       delivered: null,
       route: "hcx",
       agent: "zsh",
-      note: NO_STATUS_NOTE,
+      note: shellNote("zsh"),
+    });
+    expect(deliveryFields({ started: null, status: null, turn: 0 }, "zsh", "hcx", "vim")).toEqual({
+      delivered: null,
+      route: "hcx",
+      agent: "zsh",
+      program: "vim",
+      note: shellNote("zsh"),
     });
     expect(deliveryFields({ started: null, status: null, turn: 0 }, "opencode", "hcx")).toEqual({
       delivered: null,
@@ -230,15 +259,20 @@ describe("delivery fields", () => {
       note: OPENCODE_NOTE,
     });
     expect(deliveryFields({}, null, "hcx-raw").note).toBe(NO_STATUS_NOTE);
+    expect(deliveryFields({}, "muse", "hcx").note).toBe(NO_STATUS_NOTE);
   });
   test("the route says how the message was sent", () => {
     expect(deliveryFields({ started: true }, "muse", "hcx").route).toBe("hcx");
-    expect(deliveryFields({ started: true }, "muse", "hc").route).toBe("hc");
     expect(deliveryFields({ started: true }, "muse", "hcx-raw").route).toBe("hcx-raw");
   });
-  test("agentOf reads the target's kind from hc ls", () => {
-    const agents = new Map([["t10", "claude-code"]]);
+  test("agentOf reads the target's kind from hc ls, by address or name", () => {
+    const agents = new Map([
+      ["t10", "claude-code"],
+      ["Lead", "claude-code"],
+      ["lead", "claude-code"],
+    ]);
     expect(agentOf(agents, "t10")).toBe("claude-code");
+    expect(agentOf(agents, "lead")).toBe("claude-code");
     expect(agentOf(agents, "t99")).toBeNull();
   });
 });
@@ -271,6 +305,28 @@ describe("parseSpawn", () => {
       variant: "high",
       json: true,
     });
+  });
+  test("values take a space or =, and keep extra agent flags outside the model", () => {
+    expect(parseSpawn(["muse", "--name=Audit", "--space=SWE", "--folder=/tmp/x", "--task=check"]).name).toBe("Audit");
+    const plan = parseSpawn(["opencode", "--model=v/w", "--variant=high", "--name", "Probe"]);
+    expect(plan).toEqual({ agent: "opencode", argv: ["opencode"], name: "Probe", model: "v/w", variant: "high" });
+  });
+  test("a value starting with - is refused", () => {
+    for (const args of [
+      ["muse", "--name", "--json"],
+      ["muse", "--space", "--json"],
+      ["pi", "--folder", "--name"],
+      ["opencode", "--model", "--variant"],
+      ["opencode", "--model=v/w", "--variant", "--json"],
+    ]) {
+      expect(() => parseSpawn(args)).toThrow(HcxError);
+    }
+  });
+  test("names that cannot resolve are refused", () => {
+    for (const name of ["t7", "t1b", "machine/t7", "123", "My Tab", "a b"]) {
+      expect(() => parseSpawn(["muse", "--name", name])).toThrow(/must not look like/);
+    }
+    expect(parseSpawn(["muse", "--name", "Audit"]).name).toBe("Audit");
   });
   test("--variant needs --model", () => {
     expect(() => parseSpawn(["opencode", "--variant", "high"])).toThrow(/--variant needs --model/);
@@ -357,6 +413,39 @@ describe("opencode model", () => {
       ok: false,
       reason: 'unknown variant "base" for vikey/deepseek-r1; available: none',
     });
+  });
+});
+
+describe("HcxError kinds and exit codes", () => {
+  test("usage is 2, not_found is 3, anything else is 1", () => {
+    expect(new HcxError("x", { kind: "usage" }).exitCode).toBe(2);
+    expect(new HcxError("x", { kind: "not_found" }).exitCode).toBe(3);
+    expect(new HcxError("x", { kind: "ambiguous" }).exitCode).toBe(1);
+    expect(new HcxError("x").exitCode).toBe(1);
+    expect(new HcxError("x").kind).toBe("error");
+  });
+  test("parsers report usage, ambiguity and not_found", () => {
+    try {
+      parseSend([]);
+      expect.unreachable();
+    } catch (e) {
+      expect(e).toBeInstanceOf(HcxError);
+      expect((e as HcxError).kind).toBe("usage");
+      expect((e as HcxError).exitCode).toBe(2);
+    }
+    try {
+      resolveTarget("dup", tabs);
+      expect.unreachable();
+    } catch (e) {
+      expect((e as HcxError).kind).toBe("ambiguous");
+    }
+    try {
+      pickSpace("nope", "t3", parseSpaces({ spaces: [] }));
+      expect.unreachable();
+    } catch (e) {
+      expect((e as HcxError).kind).toBe("not_found");
+      expect((e as HcxError).exitCode).toBe(3);
+    }
   });
 });
 

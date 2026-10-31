@@ -46,7 +46,25 @@ export function parseSpaces(ls: unknown): SpaceInfo[] {
     }));
 }
 
-export class HcxError extends Error {}
+/**
+ * hcx's own error. `kind` follows hc's `{"error":{"kind","message","hint"}}` shape
+ * (`ambiguous`, `usage`, `not_found`; anything else is `error`) and `exitCode` follows
+ * hc's convention: 2 for usage, 3 for not_found, 1 otherwise.
+ */
+export type HcxErrorKind = "ambiguous" | "usage" | "not_found" | "error";
+
+export class HcxError extends Error {
+  kind: HcxErrorKind;
+  exitCode: number;
+  hint?: string;
+  constructor(message: string, opts?: { kind?: HcxErrorKind; exitCode?: number; hint?: string }) {
+    super(message);
+    this.name = "HcxError";
+    this.kind = opts?.kind ?? "error";
+    this.exitCode = opts?.exitCode ?? (this.kind === "usage" ? 2 : this.kind === "not_found" ? 3 : 1);
+    if (opts?.hint !== undefined) this.hint = opts.hint;
+  }
+}
 
 /** A plain JSON object (not null, not an array). */
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -63,8 +81,9 @@ export function pickSpace(wanted: string | undefined, caller: string | undefined
     const byId = spaces.find((s) => s.id === wanted);
     if (byId) return byId.id;
     const hits = spaces.filter((s) => s.name.toLowerCase() === wanted.toLowerCase());
-    if (hits.length > 1) throw new HcxError(`space name "${wanted}" is ambiguous; use its id`);
-    if (hits.length === 0) throw new HcxError(`no space "${wanted}"; known: ${spaces.map((s) => s.name).join(", ")}`);
+    if (hits.length > 1) throw new HcxError(`space name "${wanted}" is ambiguous; use its id`, { kind: "ambiguous" });
+    if (hits.length === 0)
+      throw new HcxError(`no space "${wanted}"; known: ${spaces.map((s) => s.name).join(", ")}`, { kind: "not_found" });
     return hits[0].id;
   }
   return caller ? spaces.find((s) => s.terminals.includes(caller))?.id : undefined;
@@ -87,7 +106,7 @@ function isNumericName(s: string): boolean {
 export function resolveTarget(target: string, tabs: TabInfo[]): string {
   if (isAddress(target) || isNumericName(target)) return target;
   const hits = tabs.filter((t) => t.name.toLowerCase() === target.toLowerCase());
-  if (hits.length > 1) throw new HcxError(`tab name "${target}" is ambiguous; use an address like t7`);
+  if (hits.length > 1) throw new HcxError(`tab name "${target}" is ambiguous; use an address like t7`, { kind: "ambiguous" });
   if (hits.length === 0) return target;
   const [address] = hits[0].agents.length ? hits[0].agents : hits[0].terminals;
   if (!address) throw new HcxError(`tab "${target}" has no terminal`);
@@ -100,9 +119,30 @@ export function senderName(me: string | undefined, tabs: TabInfo[]): string | nu
   return tabs.find((t) => t.terminals.includes(me))?.name ?? me;
 }
 
+/**
+ * What the footer's reply command should target: the sender's tab name, but only when
+ * that name resolves uniquely back to the sender's address. Otherwise the address,
+ * which always resolves. A name with whitespace, an address-like or numeric name, or
+ * a twin name would give a reply that reaches the wrong place or none at all.
+ */
+export function replyTarget(me: string, tabs: TabInfo[]): string {
+  const tab = tabs.find((t) => t.terminals.includes(me));
+  const name = tab?.name;
+  if (name && !/\s/.test(name) && !isAddress(name) && !/^\d+$/.test(name)) {
+    try {
+      if (resolveTarget(name, tabs) === me) return name;
+    } catch {
+      // Ambiguous or terminal-less: fall through to the address.
+    }
+  }
+  return me;
+}
+
 export function withFooter(text: string, me: string | undefined, tabs: TabInfo[]): string {
-  const name = senderName(me, tabs);
-  return name ? `${text}\n\n— from ${name} · reply: hcx send ${name} "..."` : text;
+  if (!me) return text;
+  const target = replyTarget(me, tabs);
+  const name = tabs.find((t) => t.terminals.includes(me))?.name ?? me;
+  return `${text}\n\n— from ${name} · reply: hcx send ${target} "..."`;
 }
 
 /** Commands whose first positional argument is a `<terminal>`. */
@@ -189,17 +229,37 @@ const SEND_VALUE_FLAGS = new Set(["--if", "--timeout"]);
 /** hcx's own send flags: they change the text, so hc never sees them. */
 const SEND_RAW_FLAGS = new Set(["--no-footer", "--raw"]);
 
+export const SEND_USAGE =
+  'usage: hcx send [--wait] [--force] [--json] [--if idle|working] [--timeout SECONDS] [--no-footer] <tab-name|tNN> "text"';
+
+/** hcx's own help for `send`, printed for `hcx send --help` and `hcx send <tab> --help`. */
+export const SEND_HELP = `${SEND_USAGE}
+
+Send a message to another terminal without the <hc from> tag, by tab name, with a
+footer that names the sender. hc flags go before the target or before the text:
+--wait, --force, --json, --if <status>, --timeout <seconds>.
+
+--no-footer (alias --raw) sends the text exactly as given: no footer and no tag.
+It works for every target, including a plain shell or an opencode TUI, and combines
+with the other flags: hcx send --no-footer --if idle Vrax "echo hi".
+
+Without --no-footer the footer "— from <tab> · reply: hcx send <tab> ..." is added
+when HC_TERMINAL_ID is set, and a plain shell is refused: sending there would type
+the text and the footer as shell commands. Use -- if the message itself starts with
+a flag: hcx send Vrax -- "--wait".`;
+
 /**
  * `<hc send flags...> <tab-name|tNN> <text...>`. Flags are accepted before the target
  * and before the text; once the text starts, every remaining argument is text.
- * `--no-footer` (alias `--raw`) sends the text exactly as given.
+ * `--no-footer` (alias `--raw`) sends the text exactly as given. `-h`/`--help` are not
+ * parsed here: `send` intercepts them (a text starting with `--` still works after an
+ * explicit `--`).
  */
 export function parseSend(args: string[]): SendPlan {
   const flags: string[] = [];
   let target: string | undefined;
   let raw = false;
   let i = 0;
-  const usage = 'usage: hcx send [--wait] [--force] [--json] [--if idle|working] [--timeout SECONDS] [--no-footer] <tab-name|tNN> "text"';
 
   while (i < args.length) {
     const arg = args[i];
@@ -207,38 +267,6 @@ export function parseSend(args: string[]): SendPlan {
       i++;
       if (target === undefined) target = args[i++];
       break;
-    }
-    if (target === undefined) {
-      if (arg === "-h" || arg === "--help") {
-        flags.push(arg);
-        i++;
-        continue;
-      }
-      if (SEND_RAW_FLAGS.has(arg)) {
-        raw = true;
-        i++;
-        continue;
-      }
-      if (SEND_BOOLEAN_FLAGS.has(arg)) {
-        flags.push(arg);
-        i++;
-        continue;
-      }
-      if (SEND_VALUE_FLAGS.has(arg)) {
-        const value = args[i + 1];
-        if (value === undefined) throw new HcxError(`${arg} needs a value`);
-        flags.push(arg, value);
-        i += 2;
-        continue;
-      }
-      if (arg.startsWith("--if=") || arg.startsWith("--timeout=")) {
-        flags.push(arg);
-        i++;
-        continue;
-      }
-      target = arg;
-      i++;
-      continue;
     }
     if (SEND_RAW_FLAGS.has(arg)) {
       raw = true;
@@ -252,7 +280,7 @@ export function parseSend(args: string[]): SendPlan {
     }
     if (SEND_VALUE_FLAGS.has(arg)) {
       const value = args[i + 1];
-      if (value === undefined) throw new HcxError(`${arg} needs a value`);
+      if (value === undefined || value.startsWith("-")) throw new HcxError(`${arg} needs a value`, { kind: "usage" });
       flags.push(arg, value);
       i += 2;
       continue;
@@ -262,17 +290,22 @@ export function parseSend(args: string[]): SendPlan {
       i++;
       continue;
     }
+    if (target === undefined) {
+      target = arg;
+      i++;
+      continue;
+    }
     break;
   }
 
-  if (!target) throw new HcxError(usage);
+  if (!target) throw new HcxError(SEND_USAGE, { kind: "usage" });
   const text = args.slice(i).join(" ");
-  if (!text) throw new HcxError(usage);
+  if (!text) throw new HcxError(SEND_USAGE, { kind: "usage" });
   return { target, text, flags, raw };
 }
 
-/** How a message reached its target: `hcx` untagged, `hc` tagged, `hcx-raw` untagged as given. */
-export type SendRoute = "hcx" | "hc" | "hcx-raw";
+/** How a message reached its target: `hcx` untagged, `hcx-raw` untagged as given. */
+export type SendRoute = "hcx" | "hcx-raw";
 
 export interface DeliveryFields {
   /** True or false when the target confirmed; null when it reports no status. */
@@ -280,30 +313,65 @@ export interface DeliveryFields {
   route: SendRoute;
   /** The target's agent kind, from `hc ls`; null when it is not listed. */
   agent: string | null;
-  /** Why delivery is unconfirmed. */
+  /** The foreground program when the agent kind is a plain shell, else absent. */
+  program?: string;
+  /** Why delivery is unconfirmed, or why a confirmed send started no turn. */
   note?: string;
 }
 
 /** The note for an opencode target that reports no status. */
 export const OPENCODE_NOTE = "opencode reports no turn status";
 
-/** The note for any other target that reports no status, so nobody can tell if it arrived. */
+/**
+ * The note when nothing about the target is known, so nobody can tell if it arrived.
+ * When the kind is known the note names it instead (see `shellNote`).
+ */
 export const NO_STATUS_NOTE = "target is an opencode TUI or a shell; hc reports no turn status";
+
+/** Shell kinds: a shell tab is a plain shell, never an agent. */
+export const SHELL_KINDS = new Set(["zsh", "sh", "bash", "fish", "dash", "ksh", "nu", "pwsh"]);
+
+/** Whether an `hc ls` agent kind is a plain shell. */
+export function isShellKind(kind: string): boolean {
+  return SHELL_KINDS.has(kind);
+}
+
+/** The note for a target whose kind is a plain shell and which reports no status. */
+export function shellNote(kind: string): string {
+  return `target is a ${kind} shell; hc reports no turn status`;
+}
+
+/** The note for a send the target confirmed but which started no turn. */
+export const NOT_STARTED_NOTE = "did not start a turn; it may still have arrived, read before resending";
 
 /**
  * Explicit delivery fields for an `hc send` result. `started` is null exactly when the
  * program reports no status, so `delivered` stays null there and a note explains it.
+ * A confirmed send that started no turn (`started: false`) keeps `delivered: false`
+ * with a note against resending blindly. `program` is the foreground program when the
+ * agent kind stayed a shell kind.
  */
-export function deliveryFields(result: unknown, agent: string | null, route: SendRoute): DeliveryFields {
+export function deliveryFields(
+  result: unknown,
+  agent: string | null,
+  route: SendRoute,
+  program?: string | null,
+): DeliveryFields {
   const started = isRecord(result) ? result.started : undefined;
   const delivered = typeof started === "boolean" ? started : null;
-  if (delivered !== null) return { delivered, route, agent };
-  return { delivered, route, agent, note: agent === "opencode" ? OPENCODE_NOTE : NO_STATUS_NOTE };
+  const extra = program ? { program } : {};
+  if (delivered !== null) {
+    return delivered
+      ? { delivered, route, agent, ...extra }
+      : { delivered, route, agent, ...extra, note: NOT_STARTED_NOTE };
+  }
+  const note = agent === "opencode" ? OPENCODE_NOTE : agent && isShellKind(agent) ? shellNote(agent) : NO_STATUS_NOTE;
+  return { delivered, route, agent, ...extra, note };
 }
 
-/** The target's agent kind, from `hc ls`; null when it is not listed. */
+/** The target's agent kind, from `hc ls` (keyed by address and name); null when it is not listed. */
 export function agentOf(agents: Map<string, string>, address: string): string | null {
-  return agents.get(address) ?? null;
+  return agents.get(address) ?? agents.get(address.toLowerCase()) ?? null;
 }
 
 /** Agents `hcx spawn` knows, and the command each one runs. */
@@ -327,35 +395,62 @@ export interface SpawnPlan {
   json?: boolean;
 }
 
+export const SPAWN_USAGE = `usage: hcx spawn <${Object.keys(AGENTS).join("|")}> [--name N] [--space S] [--folder DIR] [--task TEXT] [--json] [agent flags...]`;
+
+/** hcx's own help for `spawn`, printed for `hcx spawn --help`. */
+export const SPAWN_HELP = `${SPAWN_USAGE}
+
+Start an agent in a tab of its own (no parent terminal) through herdr-app do tab.new.
+Only --name, --space, --folder (-C), --task and --json are hcx's own; every other flag
+goes to the agent, and -- forces the rest to the agent. Values take a space or =:
+--name Review, --space=SWE, --model provider/model. A value starting with - is refused.
+
+opencode takes --model provider/model [--variant LEVEL] as hcx's own too: the model
+is checked against the registry and switched before the tab opens. Extra agent flags
+are kept after --session: hcx spawn opencode --model p/m -- --yolo.`;
+
 /**
  * `<agent> [--name N] [--folder DIR] [--task TEXT] [--space S] [--json] [agent flags...]`.
  * Only those are hcx's own; every other flag goes to the agent. For opencode, `--model`
- * and `--variant` are hcx's own too, because they choose the session's model.
+ * and `--variant` are hcx's own too, because they choose the session's model. `-h` and
+ * `--help` are not parsed here: `spawn` intercepts a leading one (`spawn muse --help`
+ * still goes to the agent).
  */
 export function parseSpawn(args: string[]): SpawnPlan {
   const [agent, ...rest] = args;
-  if (!agent) throw new HcxError(`usage: hcx spawn <${Object.keys(AGENTS).join("|")}> [agent flags...]`);
+  if (!agent) throw new HcxError(SPAWN_USAGE, { kind: "usage" });
   const command = AGENTS[agent];
-  if (!command) throw new HcxError(`unknown agent "${agent}"; known: ${Object.keys(AGENTS).join(", ")}`);
+  if (!command) throw new HcxError(`unknown agent "${agent}"; known: ${Object.keys(AGENTS).join(", ")}`, { kind: "usage" });
   const plan: SpawnPlan = { agent, argv: [command] };
-  const value = (flag: string, i: number) => {
-    const v = rest[i + 1];
-    if (v === undefined) throw new HcxError(`${flag} needs a value`);
+  const value = (flag: string, raw: string | undefined, i: number) => {
+    const v = raw ?? rest[i + 1];
+    if (v === undefined || v.startsWith("-"))
+      throw new HcxError(`${flag} needs a value`, { kind: "usage" });
     return v;
   };
+  const split = (a: string): [string, string | undefined] => {
+    const at = a.indexOf("=");
+    return at < 0 ? [a, undefined] : [a.slice(0, at), a.slice(at + 1)];
+  };
   for (let i = 0; i < rest.length; i++) {
-    const a = rest[i];
-    if (a === "--") { plan.argv.push(...rest.slice(i + 1)); break; }
-    if (a === "--name") plan.name = value(a, i++);
-    else if (a === "--folder" || a === "-C") plan.folder = value(a, i++);
-    else if (a === "--task") plan.task = value(a, i++);
-    else if (a === "--space") plan.space = value(a, i++);
-    else if (a === "--json") plan.json = true;
-    else if (agent === "opencode" && a === "--model") plan.model = value(a, i++);
-    else if (agent === "opencode" && a === "--variant") plan.variant = value(a, i++);
-    else plan.argv.push(FLAG_ALIASES[a] ?? a);
+    const [a, inline] = split(rest[i]);
+    if (rest[i] === "--") { plan.argv.push(...rest.slice(i + 1)); break; }
+    if (a === "--name") plan.name = inline === undefined ? value(a, undefined, i++) : value(a, inline, i);
+    else if (a === "--folder" || rest[i] === "-C") plan.folder = inline === undefined ? value(a === "--folder" ? a : "-C", undefined, i++) : value(a, inline, i);
+    else if (a === "--task") plan.task = inline === undefined ? value(a, undefined, i++) : value(a, inline, i);
+    else if (a === "--space") plan.space = inline === undefined ? value(a, undefined, i++) : value(a, inline, i);
+    else if (rest[i] === "--json") plan.json = true;
+    else if (agent === "opencode" && a === "--model") plan.model = inline === undefined ? value(a, undefined, i++) : value(a, inline, i);
+    else if (agent === "opencode" && a === "--variant") plan.variant = inline === undefined ? value(a, undefined, i++) : value(a, inline, i);
+    else plan.argv.push(FLAG_ALIASES[rest[i]] ?? rest[i]);
   }
-  if (plan.variant && !plan.model) throw new HcxError("--variant needs --model");
+  if (plan.variant && !plan.model) throw new HcxError("--variant needs --model", { kind: "usage" });
+  if (plan.name && (isAddress(plan.name) || /^\d+$/.test(plan.name) || /\s/.test(plan.name))) {
+    throw new HcxError(
+      `--name "${plan.name}" must not look like a terminal address, be all digits, or contain whitespace`,
+      { kind: "usage" },
+    );
+  }
   return plan;
 }
 
@@ -363,7 +458,7 @@ export function parseSpawn(args: string[]): SpawnPlan {
 export function parseModel(spec: string): { providerID: string; id: string } {
   const at = spec.indexOf("/");
   if (at <= 0 || at === spec.length - 1) {
-    throw new HcxError(`--model needs provider/model, such as "provider/model"; got "${spec}"`);
+    throw new HcxError(`--model needs provider/model, such as "provider/model"; got "${spec}"`, { kind: "usage" });
   }
   return { providerID: spec.slice(0, at), id: spec.slice(at + 1) };
 }

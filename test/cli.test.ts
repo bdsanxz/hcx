@@ -2,11 +2,11 @@
 // PATH that record what they were asked (test/fake-tool.ts) and answer from fixtures.
 
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { NO_STATUS_NOTE, OPENCODE_NOTE } from "../src/lib";
+import { OPENCODE_NOTE } from "../src/lib";
 import { VERSION } from "../src/version";
 
 const MAIN = fileURLToPath(new URL("../src/main.ts", import.meta.url));
@@ -149,14 +149,40 @@ describe("hcx send delivery status", () => {
     s.answer("hc.get.t6", { out: '{"foreground":{"name":"zsh","argv":["zsh"],"pid":1}}\n' });
     s.answer("hc.send", { out: '{"started":null,"status":null,"turn":0}\n' });
 
-    const r = s.run(["send", "--json", "Shell", "hello"]);
+    const r = s.run(["send", "--json", "--no-footer", "Shell", "hello"]);
     expect(r.code).toBe(0);
     const body = JSON.parse(r.out);
     expect(body.delivered).toBeNull();
-    expect(body.route).toBe("hcx");
+    expect(body.route).toBe("hcx-raw");
     expect(body.agent).toBe("zsh");
-    expect(body.note).toBe(NO_STATUS_NOTE);
+    expect(body.note).toBe("target is a zsh shell; hc reports no turn status");
     expect(s.call("hc", "get")?.args).toEqual(["get", "t6"]);
+  });
+
+  test("a plain shell is refused without --no-footer, before sending", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.send", { out: '{"started":null,"status":null,"turn":0}\n' });
+
+    const r = s.run(["send", "--json", "Shell", "hello"]);
+    expect(r.code).toBe(2);
+    expect(JSON.parse(r.err)).toEqual({
+      error: { kind: "usage", message: 'tab "Shell" is a plain shell; use --no-footer to type a command' },
+    });
+    expect(s.calls().some((c) => c.tool === "hc" && c.args[0] === "send")).toBe(false);
+  });
+
+  test("a shell running another program reports the program and keeps the shell kind", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.get.t6", { out: '{"foreground":{"name":"vim","argv":["vim"],"pid":9}}\n' });
+    s.answer("hc.send", { out: '{"started":null,"status":null,"turn":0}\n' });
+
+    const r = s.run(["send", "--json", "--no-footer", "Shell", "hello"]);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toMatchObject({ delivered: null, agent: "zsh", program: "vim" });
   });
 
   test("an opencode tab behind a shell wrapper is reported as opencode", () => {
@@ -197,11 +223,11 @@ describe("hcx send delivery status", () => {
     s.answer("hc.get.t6", { err: '{"error":{"kind":"not_found","message":"no terminal \\"t6\\""}}\n', exit: 1 });
     s.answer("hc.send", { out: '{"started":null,"status":null,"turn":0}\n' });
 
-    const r = s.run(["send", "--json", "Shell", "hello"]);
+    const r = s.run(["send", "--json", "--no-footer", "Shell", "hello"]);
     expect(r.code).toBe(0);
     const body = JSON.parse(r.out);
     expect(body.agent).toBe("zsh");
-    expect(body.note).toBe(NO_STATUS_NOTE);
+    expect(body.note).toBe("target is a zsh shell; hc reports no turn status");
   });
 
   test("unparseable hc get output keeps the shell kind", () => {
@@ -211,11 +237,11 @@ describe("hcx send delivery status", () => {
     s.answer("hc.get.t6", { out: "not json at all\n" });
     s.answer("hc.send", { out: '{"started":null,"status":null,"turn":0}\n' });
 
-    const r = s.run(["send", "--json", "Shell", "hello"]);
+    const r = s.run(["send", "--json", "--no-footer", "Shell", "hello"]);
     expect(r.code).toBe(0);
     const body = JSON.parse(r.out);
     expect(body.agent).toBe("zsh");
-    expect(body.note).toBe(NO_STATUS_NOTE);
+    expect(body.note).toBe("target is a zsh shell; hc reports no turn status");
   });
 
   test("the default output (piped) carries the fields too", () => {
@@ -257,7 +283,7 @@ describe("hcx send --no-footer", () => {
     expect(JSON.parse(r.out)).toMatchObject({ delivered: true, route: "hcx-raw", agent: "muse" });
 
     const send = s.call("hc", "send");
-    expect(send?.args).toEqual(["send", "--wait", "--force", "--if", "idle", "--json", "t5", text]);
+    expect(send?.args).toEqual(["send", "--wait", "--force", "--if", "idle", "--json", "--", "t5", text]);
     expect(send?.caller).toBeNull();
   });
 
@@ -269,6 +295,43 @@ describe("hcx send --no-footer", () => {
     const r = s.run(["send", "Shell", "--raw", "echo hi"]);
     expect(JSON.parse(r.out).route).toBe("hcx-raw");
     expect(s.call("hc", "send")?.args.at(-1)).toBe("echo hi");
+  });
+
+  test("hcx's own send help, and a leading dash still reaches hc", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.send", { out: '{"started":true,"status":"idle","turn":3}\n' });
+
+    for (const args of [["--help"], ["-h"]]) {
+      const help = s.run(["send", ...args]);
+      expect(help.code).toBe(0);
+      expect(help.out).toContain("--no-footer");
+      expect(help.out).toContain("footer");
+    }
+    const named = s.run(["send", "Mira", "--help"]);
+    expect(named.code).toBe(0);
+    expect(named.out).toContain("--no-footer");
+
+    const waited = s.run(["send", "--json", "--no-footer", "Mira", "--", "--wait"]);
+    expect(waited.code).toBe(0);
+    expect(s.calls().filter((c) => c.tool === "hc" && c.args[0] === "send").at(-1)?.args).toEqual([
+      "send",
+      "--json",
+      "--",
+      "t5",
+      "--wait",
+    ]);
+
+    const bullet = s.run(["send", "--json", "--no-footer", "t6", "- item one"]);
+    expect(bullet.code).toBe(0);
+    expect(s.calls().filter((c) => c.tool === "hc" && c.args[0] === "send").at(-1)?.args).toEqual([
+      "send",
+      "--json",
+      "--",
+      "t6",
+      "- item one",
+    ]);
   });
 
   test("without the flag the footer is still added and the tag is absent", () => {
@@ -329,6 +392,8 @@ describe("hcx spawn opencode --model", () => {
       folder,
       model,
       variant: "high",
+      tab: "tab9",
+      session: "ses_1",
     });
 
     // The registry is consulted first, in the same folder, and nothing from it is printed.
@@ -396,7 +461,12 @@ describe("hcx spawn opencode --model", () => {
 
     const r = s.run(["spawn", "opencode", "--model", "vikey/no-such-model", "--name", "Probe", "--folder", s.folder()]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain('unknown opencode model "vikey/no-such-model"; run opencode and pick one with /models');
+    expect(JSON.parse(r.err)).toEqual({
+      error: {
+        kind: "error",
+        message: 'unknown opencode model "vikey/no-such-model"; run opencode and pick one with /models',
+      },
+    });
     expect(s.calls().some((c) => c.tool === "opencode" && c.args[1] === "session.create")).toBe(false);
     expect(s.call("herdr-app", "do")).toBeUndefined();
   });
@@ -407,7 +477,7 @@ describe("hcx spawn opencode --model", () => {
 
     const r = s.run(["spawn", "opencode", "--model", "nope/deepseek-v4-flash", "--name", "Probe", "--folder", s.folder()]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain('unknown opencode model "nope/deepseek-v4-flash"');
+    expect(JSON.parse(r.err).error.message).toContain('unknown opencode model "nope/deepseek-v4-flash"');
     expect(s.calls().some((c) => c.tool === "opencode" && c.args[1] === "session.create")).toBe(false);
     expect(s.call("herdr-app", "do")).toBeUndefined();
   });
@@ -418,7 +488,7 @@ describe("hcx spawn opencode --model", () => {
 
     const r = s.run(["spawn", "opencode", "--model", "anthropic/claude-sonnet-4", "--name", "Probe", "--folder", s.folder()]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain('opencode model "anthropic/claude-sonnet-4" is disabled');
+    expect(JSON.parse(r.err).error.message).toContain('opencode model "anthropic/claude-sonnet-4" is disabled');
     expect(s.calls().some((c) => c.tool === "opencode" && c.args[1] === "session.create")).toBe(false);
     expect(s.call("herdr-app", "do")).toBeUndefined();
   });
@@ -429,8 +499,21 @@ describe("hcx spawn opencode --model", () => {
 
     const r = s.run(["spawn", "opencode", "--model", model, "--variant", "max", "--name", "Probe", "--folder", s.folder()]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain(`unknown variant "max" for ${model}`);
+    expect(JSON.parse(r.err).error.message).toContain(`unknown variant "max" for ${model}`);
     expect(r.err).toContain("available: low, medium, high");
+    expect(s.calls().some((c) => c.tool === "opencode" && c.args[1] === "session.create")).toBe(false);
+    expect(s.call("herdr-app", "do")).toBeUndefined();
+  });
+
+  test("stdout from a failed model.list never reaches the error", () => {
+    const s = sandbox();
+    ready(s);
+    s.answer("opencode.model.list", { out: "CANARY-SECRET-MODELS\n", exit: 1 });
+
+    const r = s.run(["spawn", "opencode", "--model", model, "--name", "Probe", "--folder", s.folder()]);
+    expect(r.code).toBe(1);
+    expect(r.err).not.toContain("CANARY");
+    expect(r.out).not.toContain("CANARY");
     expect(s.calls().some((c) => c.tool === "opencode" && c.args[1] === "session.create")).toBe(false);
     expect(s.call("herdr-app", "do")).toBeUndefined();
   });
@@ -458,7 +541,7 @@ describe("hcx spawn opencode --model", () => {
 
     const r = s.run(["spawn", "opencode", "--name", "Plain", "--folder", folder, "--json"], { HC_TERMINAL_ID: "t1" });
     expect(r.code).toBe(0);
-    expect(JSON.parse(r.out)).toEqual({ name: "Plain", terminal: "t90", agent: "opencode", space: "spA", folder });
+    expect(JSON.parse(r.out)).toEqual({ name: "Plain", terminal: "t90", agent: "opencode", space: "spA", folder, tab: "tab9" });
     expect(s.calls().some((c) => c.tool === "opencode")).toBe(false);
     const argv = JSON.parse(s.call("herdr-app", "do")!.args[s.call("herdr-app", "do")!.args.indexOf("--argv") + 1]);
     expect(argv).toEqual(["opencode"]);
@@ -519,7 +602,250 @@ describe("hcx done", () => {
 
   test("no tab is a usage error", () => {
     const r = sandbox().run(["done"]);
+    expect(r.code).toBe(2);
+    expect(JSON.parse(r.err)).toEqual({ error: { kind: "usage", message: "usage: hcx done [--self] [--json] <tab>..." } });
+  });
+
+  test("-h and --help print help, and other flags are refused", () => {
+    for (const flag of ["-h", "--help"]) {
+      const r = sandbox().run(["done", flag]);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("usage: hcx done");
+    }
+    const r = sandbox().run(["done", "--force", "Mira"]);
+    expect(r.code).toBe(2);
+    expect(JSON.parse(r.err).error.kind).toBe("usage");
+  });
+
+  test("refuses its own terminal unless --self is given", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("kill.t1", { out: "{}\n" });
+    s.answer("rm.t1", { out: '{"removed":"t1"}\n' });
+
+    const refused = s.run(["done", "Lead"], { HC_TERMINAL_ID: "t1" });
+    expect(refused.code).toBe(1);
+    expect(refused.err).toContain("--self");
+    expect(s.calls().filter((c) => c.tool === "hc").length).toBe(0);
+
+    const allowed = s.run(["done", "--self", "Lead"], { HC_TERMINAL_ID: "t1" });
+    expect(allowed.code).toBe(0);
+    expect(allowed.out).toBe("done Lead (t1)\n");
+  });
+
+  test("--json prints one object per tab", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("kill.t5", { out: '{"address":"t5"}\n' });
+    s.answer("rm.t5", { out: '{"removed":"t5"}\n' });
+    s.answer("kill.Ghost", { err: '{"error":{"kind":"not_found","message":"no terminal \\"Ghost\\""}}\n', exit: 3 });
+    s.answer("rm.Ghost", { err: '{"error":{"kind":"not_found","message":"no terminal \\"Ghost\\""}}\n', exit: 3 });
+
+    const r = s.run(["done", "--json", "Mira", "Ghost"]);
     expect(r.code).toBe(1);
-    expect(r.err).toContain("usage: hcx done <tab>...");
+    expect(JSON.parse(r.out)).toEqual([
+      { target: "Mira", terminal: "t5", removed: true },
+      { target: "Ghost", terminal: "Ghost", removed: false, error: 'no terminal "Ghost"' },
+    ]);
+  });
+});
+
+describe("hcx run", () => {
+  test("adds --no-parent unless the arguments choose a parent", () => {
+    const s = sandbox();
+
+    const r = s.run(["run", "--bg", "--name", "x", "sleep", "30"]);
+    expect(r.code).toBe(0);
+    expect(s.call("hc", "run")?.args).toEqual(["run", "--no-parent", "--bg", "--name", "x", "sleep", "30"]);
+
+    const kept = s.run(["run", "--parent", "t10", "sleep", "30"]);
+    expect(kept.code).toBe(0);
+    expect(s.calls().filter((c) => c.tool === "hc" && c.args[0] === "run").at(-1)?.args).toEqual([
+      "run",
+      "--parent",
+      "t10",
+      "sleep",
+      "30",
+    ]);
+  });
+});
+
+describe("passthrough name resolution", () => {
+  test("a tab name becomes its agent terminal for hc's terminal commands", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+
+    const r = s.run(["get", "Mira"]);
+    expect(r.code).toBe(0);
+    expect(s.call("hc", "get")?.args).toEqual(["get", "t5"]);
+  });
+});
+
+describe("hcx send twin names", () => {
+  const TWINS = JSON.stringify({
+    spaces: [
+      {
+        id: "spA",
+        name: "SWE",
+        tabs: [
+          { id: "tab1", name: "Twin", terminals: [{ terminal: "t1", app: "muse" }] },
+          { id: "tab2", name: "Twin", terminals: [{ terminal: "t2", app: "muse" }] },
+        ],
+      },
+    ],
+  });
+
+  test("a twin name is refused with the ambiguous kind", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TWINS });
+
+    const r = s.run(["send", "Twin", "hello"]);
+    expect(r.code).toBe(1);
+    expect(JSON.parse(r.err)).toEqual({
+      error: { kind: "ambiguous", message: 'tab name "Twin" is ambiguous; use an address like t7' },
+    });
+    expect(s.calls().some((c) => c.tool === "hc" && c.args[0] === "send")).toBe(false);
+  });
+});
+
+describe("hcx spawn guards", () => {
+  test("--help prints spawn help without touching anything", () => {
+    const s = sandbox();
+
+    for (const flag of ["--help", "-h"]) {
+      const r = s.run(["spawn", flag]);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain("--name");
+      expect(r.out).toContain("--model");
+    }
+    expect(s.calls().length).toBe(0);
+  });
+
+  test("a duplicate --name is refused before anything opens", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+
+    const r = s.run(["spawn", "muse", "--name", "Mira", "--folder", s.folder()]);
+    expect(r.code).toBe(2);
+    expect(JSON.parse(r.err).error).toMatchObject({ kind: "usage" });
+    expect(JSON.parse(r.err).error.message).toContain('tab name "Mira" is already used by t5');
+    expect(s.call("herdr-app", "do")).toBeUndefined();
+  });
+
+  test("--name taking a flag is refused", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+
+    const r = s.run(["spawn", "muse", "--name", "--json"]);
+    expect(r.code).toBe(2);
+    expect(JSON.parse(r.err).error).toMatchObject({ kind: "usage", message: "--name needs a value" });
+    expect(s.call("herdr-app", "do")).toBeUndefined();
+  });
+
+  test("an unknown --space is refused before any session or tab exists", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+
+    const r = s.run(["spawn", "pi", "--space", "nope", "--name", "Fresh", "--folder", s.folder()]);
+    expect(r.code).toBe(3);
+    expect(JSON.parse(r.err).error).toMatchObject({ kind: "not_found" });
+    expect(JSON.parse(r.err).error.message).toContain('no space "nope"');
+    expect(s.call("herdr-app", "do")).toBeUndefined();
+  });
+
+  test("extra agent flags survive --model", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("herdr.do", { out: '{"tab":"tab9","terminal":"t90"}\n' });
+    s.answer("opencode.model.list", {
+      out: '{"data":[{"id":"m","providerID":"v","enabled":true,"variants":[]}]}\n',
+    });
+    s.answer("opencode.session.create", { out: '{"data":{"id":"ses_9"}}\n' });
+    s.answer("opencode.session.switchModel", { out: "{}\n" });
+    s.answer("opencode.session.list", { out: '{"data":[{"id":"ses_9","model":{"providerID":"v","id":"m"}}]}\n' });
+    const folder = s.folder();
+
+    const r = s.run(["spawn", "opencode", "--model", "v/m", "--name", "Kept", "--folder", folder, "--", "--yolo"]);
+    expect(r.code).toBe(0);
+    const tab = s.call("herdr-app", "do");
+    expect(JSON.parse(tab!.args[tab!.args.indexOf("--argv") + 1])).toEqual(["opencode", "--session", "ses_9", "--yolo"]);
+  });
+
+  test("a herdr-app do failure after a session exists names the session", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("herdr.do", { out: '{"error":"boom"}\n', exit: 1 });
+    s.answer("opencode.model.list", {
+      out: '{"data":[{"id":"m","providerID":"v","enabled":true,"variants":[]}]}\n',
+    });
+    s.answer("opencode.session.create", { out: '{"data":{"id":"ses_9"}}\n' });
+    s.answer("opencode.session.switchModel", { out: "{}\n" });
+    s.answer("opencode.session.list", { out: '{"data":[{"id":"ses_9","model":{"providerID":"v","id":"m"}}]}\n' });
+
+    const r = s.run(["spawn", "opencode", "--model", "v/m", "--name", "Kept", "--folder", s.folder()]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("boom");
+    expect(r.err).toContain("ses_9");
+  });
+
+  test("a missing herdr-app says so", () => {
+    const s = sandbox();
+    unlinkSync(join(s.root, "bin", "herdr-app"));
+    // Only the sandbox bin on PATH, so no real herdr-app can stand in.
+    const path = `${join(s.root, "bin")}:/usr/bin:/bin`;
+
+    const r = s.run(["spawn", "muse", "--folder", s.folder()], { PATH: path });
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("herdr-app not found");
+  });
+
+  test("a refused protective check is not silently skipped", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { err: "connection refused\n", exit: 1 });
+
+    const named = s.run(["spawn", "muse", "--name", "Fresh", "--folder", s.folder("work-a")]);
+    expect(named.code).toBe(1);
+    expect(JSON.parse(named.err).error.message).toContain('could not check --name "Fresh"');
+
+    const spaced = s.run(["spawn", "pi", "--space", "SWE", "--folder", s.folder("work-b")]);
+    expect(spaced.code).toBe(1);
+    expect(JSON.parse(spaced.err).error.message).toContain('could not list spaces for --space "SWE"');
+  });
+
+  test("the auto-naming poll picks up a real name", () => {
+    const withFresh = JSON.stringify({
+      spaces: [
+        {
+          id: "spA",
+          name: "SWE",
+          tabs: [{ id: "tab9", name: "Fresh", terminals: [{ terminal: "t90", app: "muse" }] }],
+        },
+      ],
+    });
+    const s = sandbox();
+    s.answer("herdr.ls", { out: withFresh });
+    s.answer("herdr.do", { out: '{"tab":"tab9","terminal":"t90"}\n' });
+
+    const r = s.run(["spawn", "muse", "--folder", s.folder()]);
+    expect(r.code).toBe(0);
+    expect(r.out).toBe('spawned Fresh (t90, muse) · message it: hcx send Fresh "..."\n');
+  });
+});
+
+describe("hcx send started:false", () => {
+  test("a confirmed send that started no turn warns against resending", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.send", { out: '{"started":false,"status":"idle","turn":3}\n' });
+
+    const r = s.run(["send", "--json", "Mira", "hello"]);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toMatchObject({
+      delivered: false,
+      route: "hcx",
+      agent: "muse",
+      note: "did not start a turn; it may still have arrived, read before resending",
+    });
   });
 });

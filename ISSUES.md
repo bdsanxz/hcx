@@ -12,3 +12,14 @@ Every issue reported against `hcx` is logged here first, then worked. Newest las
 | 6 | 2026-10-31 | owner request | 0.1.2 | `hcx send` always adds the sender footer, so it cannot send text as given to a plain shell or an opencode TUI, where the footer would be typed as a command. | Fixed in 0.1.3 |
 | 7 | 2026-10-31 | owner live test | 0.1.3 | `hcx spawn opencode --model vikey/no-such-model` is not refused: `session.switchModel` accepts any model and the read-back only echoes it, so the TUI opens on `no-such-model (unavailable)`. | Fixed in 0.1.4 |
 | 8 | 2026-10-31 | owner review | 0.1.4 | `hc` classifies an opencode tab as zsh, so hcx send reports agent zsh and the note says the target may be a shell. | Fixed in 0.1.5 |
+| 9 | 2026-10-31 | opus review | 0.1.5 | Any message starting with `-` fails, including the documented `--` form; `hcx send Vrax --help` treats `--help` as the message. | Fixed in 0.2.0 |
+| 10 | 2026-10-31 | opus review | 0.1.5 | The default send can type its text and footer into a plain shell; the target kind is only looked up after the send. | Fixed in 0.2.0 |
+| 11 | 2026-10-31 | opus review | 0.1.5 | A failed `opencode api model.list` can print its stdout (which may hold API keys) as error detail. | Fixed in 0.2.0 |
+| 12 | 2026-10-31 | opus review | 0.1.5 | `spawn` flag parsing starts or changes the wrong thing silently (`--help`, `--name=X`, `--model`, dropped agent flags, late `--space` check, orphan session). | Fixed in 0.2.0 |
+| 13 | 2026-10-31 | opus review | 0.1.5 | `--name` is never validated and the footer can print a reply command that cannot resolve (address-like, numeric, whitespace, twin names). | Fixed in 0.2.0 |
+| 14 | 2026-10-31 | opus review | 0.1.5 | `hcx done --help` reports success, `done` has no self-protection, discards the `hc kill` result and has no `--json`. | Fixed in 0.2.0 |
+| 15 | 2026-10-31 | opus review | 0.1.5 | `delivered: false` misreports hc `started: false`, `loadAgents` misses names, `agent` reports any foreground program, and the `hc` route is never produced. | Fixed in 0.2.0 |
+| 16 | 2026-10-31 | opus review | 0.1.5 | Herdr failures are silent, a missing tool gives a raw TypeError, lookups have no timeout, `runHc` loses the signal exit, and duplicate reads/sleep cost calls. | Fixed in 0.2.0 |
+| 17 | 2026-10-31 | opus review | 0.1.5 | hcx errors do not follow hc's format or exit codes, and `spawn --json` omits the tab and session ids. | Fixed in 0.2.0 |
+| 18 | 2026-10-31 | opus review | 0.1.5 | Installer puts the token on the command line, `--from-source` needs node and installs `hcx.js`, plus smaller trap/version/latest issues. | Fixed in 0.2.0 |
+| 19 | 2026-10-31 | opus review | 0.1.5 | Test gaps (`run`, passthrough names, duplicate `--name`, unknown `--space`, auto-name polling, `herdr-app do` failure, twin names) and a confusing README line. | Fixed in 0.2.0 |
