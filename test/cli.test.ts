@@ -41,6 +41,7 @@ interface Answer {
   out?: string;
   err?: string;
   exit?: number;
+  delay?: string;
 }
 
 interface Call {
@@ -67,6 +68,7 @@ function sandbox() {
     if (a.out !== undefined) writeFileSync(join(fake, `${name}.out`), a.out);
     if (a.err !== undefined) writeFileSync(join(fake, `${name}.err`), a.err);
     if (a.exit !== undefined) writeFileSync(join(fake, `${name}.exit`), String(a.exit));
+    if (a.delay !== undefined) writeFileSync(join(fake, `${name}.delay`), a.delay);
   };
 
   const run = (args: string[], env: Record<string, string> = {}) => {
@@ -75,6 +77,7 @@ function sandbox() {
     delete base.HC_TERMINAL_ID;
     delete base.FAKE_DIR;
     delete base.FAKE_LOG;
+    delete base.HCX_SEND_TIMEOUT_MS;
     const child = Bun.spawnSync([process.execPath, MAIN, ...args], {
       env: { ...base, PATH: `${bin}:${base.PATH}`, FAKE_DIR: fake, FAKE_LOG: log, ...env },
       stdout: "pipe",
@@ -119,6 +122,21 @@ describe("hcx --version", () => {
       const r = s.run([flag]);
       expect(r.code).toBe(0);
       expect(r.out).toBe(`hcx ${VERSION}\nhc 9.9.9\n`);
+    }
+  });
+
+  test("--json prints the machine contract", () => {
+    const s = sandbox();
+    s.answer("hc.version", { out: "hc 9.9.9\n" });
+    for (const flag of ["--version", "-V"]) {
+      const r = s.run([flag, "--json"]);
+      expect(r.code).toBe(0);
+      expect(JSON.parse(r.out)).toEqual({
+        hcx: VERSION,
+        hc: "9.9.9",
+        contract: 1,
+        capabilities: ["no-footer", "agent-only", "json-delivery"],
+      });
     }
   });
 });
@@ -166,9 +184,9 @@ describe("hcx send delivery status", () => {
     s.answer("hc.send", { out: '{"started":null,"status":null,"turn":0}\n' });
 
     const r = s.run(["send", "--json", "Shell", "hello"]);
-    expect(r.code).toBe(2);
+    expect(r.code).toBe(4);
     expect(JSON.parse(r.err)).toEqual({
-      error: { kind: "usage", message: 'tab "Shell" is a plain shell; use --no-footer to type a command' },
+      error: { kind: "plain_shell", message: 'tab "Shell" is a plain shell; use --no-footer to type a command' },
     });
     expect(s.calls().some((c) => c.tool === "hc" && c.args[0] === "send")).toBe(false);
   });
@@ -847,5 +865,97 @@ describe("hcx send started:false", () => {
       agent: "muse",
       note: "did not start a turn; it may still have arrived, read before resending",
     });
+  });
+});
+
+describe("hcx send --agent-only", () => {
+  test("refuses a plain shell before sending, even with --no-footer", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.get.t6", { out: '{"foreground":{"name":"zsh","argv":["zsh"],"pid":1}}\n' });
+    s.answer("hc.send", { out: '{"started":null,"status":null,"turn":0}\n' });
+
+    for (const extra of [[], ["--no-footer"]]) {
+      const r = s.run(["send", "--json", "--agent-only", ...extra, "Shell", "hello"]);
+      expect(r.code).toBe(4);
+      expect(JSON.parse(r.err).error.kind).toBe("plain_shell");
+    }
+    expect(s.calls().some((c) => c.tool === "hc" && c.args[0] === "send")).toBe(false);
+  });
+
+  test("refuses an unknown kind before sending", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.send", { out: '{"started":true,"status":"idle","turn":1}\n' });
+
+    const r = s.run(["send", "--json", "--agent-only", "Ghost", "hello"]);
+    expect(r.code).toBe(4);
+    expect(JSON.parse(r.err).error.kind).toBe("plain_shell");
+    expect(s.calls().some((c) => c.tool === "hc" && c.args[0] === "send")).toBe(false);
+  });
+
+  test("combines with --json, --if and --wait for an agent", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.send", { out: '{"started":true,"status":"idle","turn":3}\n' });
+
+    const r = s.run(
+      ["send", "--agent-only", "--json", "--if", "idle", "--wait", "--timeout", "5", "Mira", "hello"],
+      { HC_TERMINAL_ID: "t1" },
+    );
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toMatchObject({ delivered: true, route: "hcx", agent: "muse" });
+    const sent = s.call("hc", "send");
+    expect(sent?.args).toContain("--if");
+    expect(sent?.args).toContain("--wait");
+    expect(sent?.args).toContain("--timeout");
+    expect(sent?.args).not.toContain("--agent-only");
+    expect(sent?.args).not.toContain("--no-footer");
+  });
+
+  test("a raw agent-only send to an agent reports the raw route", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.send", { out: '{"started":true,"status":"idle","turn":1}\n' });
+
+    const r = s.run(["send", "--json", "--agent-only", "--no-footer", "Mira", "echo hi"]);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toMatchObject({ delivered: true, route: "hcx-raw", agent: "muse" });
+    const sent = s.call("hc", "send");
+    expect(sent?.args.at(-1)).toBe("echo hi");
+  });
+});
+
+describe("hcx send raw address", () => {
+  test("skips herdr-app ls when there is nothing to resolve", () => {
+    const s = sandbox();
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.send", { out: '{"started":null,"status":null,"turn":0}\n' });
+
+    const r = s.run(["send", "--json", "--no-footer", "t6", "echo hi"], { HC_TERMINAL_ID: "t1" });
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toMatchObject({ route: "hcx-raw" });
+    expect(s.calls().some((c) => c.tool === "herdr-app")).toBe(false);
+    expect(s.call("hc", "send")?.args).toContain("t6");
+  });
+});
+
+describe("hcx send timeout", () => {
+  test("a hung hc send is killed and reports kind timeout without retrying", () => {
+    const s = sandbox();
+    s.answer("herdr.ls", { out: TABS });
+    s.answer("hc.ls", { out: AGENTS });
+    s.answer("hc.send", { out: '{"started":true,"status":"idle","turn":1}\n', delay: "500" });
+
+    const r = s.run(["send", "--json", "Mira", "hello"], { HCX_SEND_TIMEOUT_MS: "50" });
+    expect(r.code).toBe(1);
+    const body = JSON.parse(r.err);
+    expect(body.error.kind).toBe("timeout");
+    expect(body.error.message).toContain("may have landed");
+    expect(body.error.message).toContain("do not retry");
   });
 });

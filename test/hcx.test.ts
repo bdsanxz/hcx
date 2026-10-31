@@ -1,14 +1,18 @@
 import { describe, expect, test } from "bun:test";
 import {
+  CAPABILITIES,
+  CONTRACT_VERSION,
   HcxError,
   NOT_STARTED_NOTE,
   NO_STATUS_NOTE,
   OPENCODE_NOTE,
+  SEND_TIMEOUT_MS,
   TERMINAL_COMMANDS,
   agentOf,
   checkModel,
   deliveryFields,
   firstPositional,
+  formatTimeout,
   isAddress,
   nameTaken,
   needsTabLookup,
@@ -24,10 +28,12 @@ import {
   runArgs,
   sameModel,
   senderName,
+  sendTimeoutMs,
   sessionModel,
   shellNote,
   withFooter,
 } from "../src/lib";
+import { isTimeoutError, sendTimeoutError } from "../src/passthrough";
 
 const ls = {
   spaces: [
@@ -150,44 +156,125 @@ describe("runArgs", () => {
 
 describe("parseSend", () => {
   test("splits target and joins the rest as text", () => {
-    expect(parseSend(["Vrax", "hello"])).toEqual({ target: "Vrax", text: "hello", flags: [], raw: false });
-    expect(parseSend(["Vrax", "hello", "world"])).toEqual({ target: "Vrax", text: "hello world", flags: [], raw: false });
-    expect(parseSend(["Vrax", "Zytra"])).toEqual({ target: "Vrax", text: "Zytra", flags: [], raw: false });
+    expect(parseSend(["Vrax", "hello"])).toEqual({ target: "Vrax", text: "hello", flags: [], raw: false, agentOnly: false });
+    expect(parseSend(["Vrax", "hello", "world"])).toEqual({
+      target: "Vrax",
+      text: "hello world",
+      flags: [],
+      raw: false,
+      agentOnly: false,
+    });
+    expect(parseSend(["Vrax", "Zytra"])).toEqual({ target: "Vrax", text: "Zytra", flags: [], raw: false, agentOnly: false });
   });
   test("takes hc send flags before the text", () => {
-    expect(parseSend(["--wait", "--force", "Vrax", "hello"])).toEqual({ target: "Vrax", text: "hello", flags: ["--wait", "--force"], raw: false });
-    expect(parseSend(["Vrax", "--wait", "hello"])).toEqual({ target: "Vrax", text: "hello", flags: ["--wait"], raw: false });
+    expect(parseSend(["--wait", "--force", "Vrax", "hello"])).toEqual({
+      target: "Vrax",
+      text: "hello",
+      flags: ["--wait", "--force"],
+      raw: false,
+      agentOnly: false,
+    });
+    expect(parseSend(["Vrax", "--wait", "hello"])).toEqual({
+      target: "Vrax",
+      text: "hello",
+      flags: ["--wait"],
+      raw: false,
+      agentOnly: false,
+    });
     expect(parseSend(["--json", "--if", "idle", "--timeout", "30", "Vrax", "hello"])).toEqual({
       target: "Vrax",
       text: "hello",
       flags: ["--json", "--if", "idle", "--timeout", "30"],
       raw: false,
+      agentOnly: false,
     });
     expect(parseSend(["--if=working", "--timeout=5", "Vrax", "hello"])).toEqual({
       target: "Vrax",
       text: "hello",
       flags: ["--if=working", "--timeout=5"],
       raw: false,
+      agentOnly: false,
     });
   });
   test("--no-footer and --raw are hcx's own flags, never hc's", () => {
-    expect(parseSend(["--no-footer", "Vrax", "hello"])).toEqual({ target: "Vrax", text: "hello", flags: [], raw: true });
-    expect(parseSend(["Vrax", "--raw", "hello"])).toEqual({ target: "Vrax", text: "hello", flags: [], raw: true });
+    expect(parseSend(["--no-footer", "Vrax", "hello"])).toEqual({
+      target: "Vrax",
+      text: "hello",
+      flags: [],
+      raw: true,
+      agentOnly: false,
+    });
+    expect(parseSend(["Vrax", "--raw", "hello"])).toEqual({
+      target: "Vrax",
+      text: "hello",
+      flags: [],
+      raw: true,
+      agentOnly: false,
+    });
     expect(parseSend(["--raw", "--wait", "--if", "idle", "Vrax", "hello"])).toEqual({
       target: "Vrax",
       text: "hello",
       flags: ["--wait", "--if", "idle"],
       raw: true,
+      agentOnly: false,
     });
-    expect(parseSend(["--no-footer", "Vrax", "--", "--raw"])).toEqual({ target: "Vrax", text: "--raw", flags: [], raw: true });
+    expect(parseSend(["--no-footer", "Vrax", "--", "--raw"])).toEqual({
+      target: "Vrax",
+      text: "--raw",
+      flags: [],
+      raw: true,
+      agentOnly: false,
+    });
+  });
+  test("--agent-only is hcx's own flag and combines with the others", () => {
+    expect(parseSend(["--agent-only", "Vrax", "hello"])).toEqual({
+      target: "Vrax",
+      text: "hello",
+      flags: [],
+      raw: false,
+      agentOnly: true,
+    });
+    expect(parseSend(["Vrax", "--agent-only", "hello"])).toEqual({
+      target: "Vrax",
+      text: "hello",
+      flags: [],
+      raw: false,
+      agentOnly: true,
+    });
+    expect(parseSend(["--agent-only", "--no-footer", "--json", "--if", "idle", "--wait", "Vrax", "hi"])).toEqual({
+      target: "Vrax",
+      text: "hi",
+      flags: ["--json", "--if", "idle", "--wait"],
+      raw: true,
+      agentOnly: true,
+    });
+    expect(parseSend(["--agent-only", "Vrax", "--", "--agent-only"])).toEqual({
+      target: "Vrax",
+      text: "--agent-only",
+      flags: [],
+      raw: false,
+      agentOnly: true,
+    });
   });
   test("keeps a footer-like line in the text exactly as given", () => {
     const text = 'hello\n\n— from Fake · reply: hcx send Fake "..."';
-    expect(parseSend(["Vrax", "--no-footer", text])).toEqual({ target: "Vrax", text, flags: [], raw: true });
+    expect(parseSend(["Vrax", "--no-footer", text])).toEqual({ target: "Vrax", text, flags: [], raw: true, agentOnly: false });
   });
   test("-- starts the text so flag-like messages work", () => {
-    expect(parseSend(["Vrax", "--", "--wait"])).toEqual({ target: "Vrax", text: "--wait", flags: [], raw: false });
-    expect(parseSend(["--wait", "--", "Vrax", "--force"])).toEqual({ target: "Vrax", text: "--force", flags: ["--wait"], raw: false });
+    expect(parseSend(["Vrax", "--", "--wait"])).toEqual({
+      target: "Vrax",
+      text: "--wait",
+      flags: [],
+      raw: false,
+      agentOnly: false,
+    });
+    expect(parseSend(["--wait", "--", "Vrax", "--force"])).toEqual({
+      target: "Vrax",
+      text: "--force",
+      flags: ["--wait"],
+      raw: false,
+      agentOnly: false,
+    });
   });
   test("refuses missing targets, text and flag values", () => {
     expect(() => parseSend([])).toThrow(HcxError);
@@ -417,10 +504,12 @@ describe("opencode model", () => {
 });
 
 describe("HcxError kinds and exit codes", () => {
-  test("usage is 2, not_found is 3, anything else is 1", () => {
+  test("usage is 2, not_found is 3, plain_shell is 4, anything else is 1", () => {
     expect(new HcxError("x", { kind: "usage" }).exitCode).toBe(2);
     expect(new HcxError("x", { kind: "not_found" }).exitCode).toBe(3);
+    expect(new HcxError("x", { kind: "plain_shell" }).exitCode).toBe(4);
     expect(new HcxError("x", { kind: "ambiguous" }).exitCode).toBe(1);
+    expect(new HcxError("x", { kind: "timeout" }).exitCode).toBe(1);
     expect(new HcxError("x").exitCode).toBe(1);
     expect(new HcxError("x").kind).toBe("error");
   });
@@ -485,5 +574,34 @@ describe("pickSpace", () => {
   });
   test("parseSpawn reads --space", () => {
     expect(parseSpawn(["pi", "--space", "SWE"]).space).toBe("SWE");
+  });
+});
+
+describe("machine contract", () => {
+  test("contract version and capabilities are stable", () => {
+    expect(CONTRACT_VERSION).toBe(1);
+    expect(CAPABILITIES).toEqual(["no-footer", "agent-only", "json-delivery"]);
+  });
+});
+
+describe("send timeout", () => {
+  test("defaults to 30 s and formats durations", () => {
+    delete process.env.HCX_SEND_TIMEOUT_MS;
+    expect(SEND_TIMEOUT_MS).toBe(30000);
+    expect(sendTimeoutMs()).toBe(30000);
+    expect(formatTimeout(30000)).toBe("30 s");
+    expect(formatTimeout(50)).toBe("50 ms");
+  });
+  test("a timeout error is kind timeout and warns against retrying", () => {
+    const e = sendTimeoutError(30000);
+    expect(e).toBeInstanceOf(HcxError);
+    expect(e.kind).toBe("timeout");
+    expect(e.exitCode).toBe(1);
+    expect(e.message).toContain("may have landed");
+    expect(e.message).toContain("do not retry");
+    expect(isTimeoutError({ code: "ETIMEDOUT" })).toBe(true);
+    expect(isTimeoutError(new Error("spawnSync hc ETIMEDOUT"))).toBe(true);
+    expect(isTimeoutError(new Error("boom"))).toBe(false);
+    expect(isTimeoutError(null)).toBe(false);
   });
 });

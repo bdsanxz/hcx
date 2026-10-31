@@ -48,10 +48,12 @@ export function parseSpaces(ls: unknown): SpaceInfo[] {
 
 /**
  * hcx's own error. `kind` follows hc's `{"error":{"kind","message","hint"}}` shape
- * (`ambiguous`, `usage`, `not_found`; anything else is `error`) and `exitCode` follows
- * hc's convention: 2 for usage, 3 for not_found, 1 otherwise.
+ * (`ambiguous`, `usage`, `not_found`, `plain_shell`, `timeout`; anything else is
+ * `error`) and `exitCode` follows hc's convention: 2 for usage, 3 for not_found,
+ * 4 for plain_shell, 1 otherwise. `plain_shell` and the exit codes are stable:
+ * callers use them to tell a shell/agent refusal apart from bad flags.
  */
-export type HcxErrorKind = "ambiguous" | "usage" | "not_found" | "error";
+export type HcxErrorKind = "ambiguous" | "usage" | "not_found" | "plain_shell" | "timeout" | "error";
 
 export class HcxError extends Error {
   kind: HcxErrorKind;
@@ -61,9 +63,38 @@ export class HcxError extends Error {
     super(message);
     this.name = "HcxError";
     this.kind = opts?.kind ?? "error";
-    this.exitCode = opts?.exitCode ?? (this.kind === "usage" ? 2 : this.kind === "not_found" ? 3 : 1);
+    this.exitCode =
+      opts?.exitCode ?? (this.kind === "usage" ? 2 : this.kind === "not_found" ? 3 : this.kind === "plain_shell" ? 4 : 1);
     if (opts?.hint !== undefined) this.hint = opts.hint;
   }
+}
+
+/** Machine contract version for `hcx --version --json` and the `send --json` fields. */
+export const CONTRACT_VERSION = 1;
+
+/** Stable capability names advertised by `hcx --version --json`. */
+export const CAPABILITIES: string[] = ["no-footer", "agent-only", "json-delivery"];
+
+/**
+ * How long the `hc send` subprocess may run before it is killed. `--timeout`
+ * still means hc's own wait timeout and is passed through; this is a separate
+ * client-side guard. Overridable with HCX_SEND_TIMEOUT_MS for tests.
+ */
+export const SEND_TIMEOUT_MS = 30000;
+
+/** Resolve the effective `hc send` timeout, honouring the HCX_SEND_TIMEOUT_MS test hook. */
+export function sendTimeoutMs(): number {
+  const raw = process.env.HCX_SEND_TIMEOUT_MS;
+  if (raw !== undefined) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return Math.floor(n);
+  }
+  return SEND_TIMEOUT_MS;
+}
+
+/** Human duration for timeout messages: "30 s", or "50 ms" below a second. */
+export function formatTimeout(ms: number): string {
+  return ms >= 1000 ? `${Math.round(ms / 1000)} s` : `${ms} ms`;
 }
 
 /** A plain JSON object (not null, not an array). */
@@ -222,6 +253,8 @@ export interface SendPlan {
   flags: string[];
   /** No sender footer and no `<hc from>` tag: the text goes exactly as given. */
   raw: boolean;
+  /** Refuse plain shells and unknown kinds before anything is sent. */
+  agentOnly: boolean;
 }
 
 const SEND_BOOLEAN_FLAGS = new Set(["--wait", "--force", "--json"]);
@@ -230,35 +263,45 @@ const SEND_VALUE_FLAGS = new Set(["--if", "--timeout"]);
 const SEND_RAW_FLAGS = new Set(["--no-footer", "--raw"]);
 
 export const SEND_USAGE =
-  'usage: hcx send [--wait] [--force] [--json] [--if idle|working] [--timeout SECONDS] [--no-footer] <tab-name|tNN> "text"';
+  'usage: hcx send [--wait] [--force] [--json] [--if idle|working] [--timeout SECONDS] [--no-footer] [--agent-only] <tab-name|tNN> "text"';
 
 /** hcx's own help for `send`, printed for `hcx send --help` and `hcx send <tab> --help`. */
 export const SEND_HELP = `${SEND_USAGE}
 
 Send a message to another terminal without the <hc from> tag, by tab name, with a
 footer that names the sender. hc flags go before the target or before the text:
---wait, --force, --json, --if <status>, --timeout <seconds>.
+--wait, --force, --json, --if <status>, --timeout <seconds>. --timeout is hc's own
+wait timeout and is passed through; the hc send call itself is killed after 30 s
+(a {"error":{"kind":"timeout"}} error: the message may have landed, never retry).
 
 --no-footer (alias --raw) sends the text exactly as given: no footer and no tag.
 It works for every target, including a plain shell or an opencode TUI, and combines
 with the other flags: hcx send --no-footer --if idle Vrax "echo hi".
+A raw send to a terminal address (t7) skips herdr-app ls: no sender name or
+resolution is needed.
+
+--agent-only looks the target kind up first (also with --no-footer) and refuses a
+plain shell or an unknown kind before anything is sent. It combines with --json,
+--if and --wait. The refusal is kind "plain_shell" (exit 4), stable for callers.
 
 Without --no-footer the footer "— from <tab> · reply: hcx send <tab> ..." is added
-when HC_TERMINAL_ID is set, and a plain shell is refused: sending there would type
-the text and the footer as shell commands. Use -- if the message itself starts with
-a flag: hcx send Vrax -- "--wait".`;
+when HC_TERMINAL_ID is set, and a plain shell is refused (kind "plain_shell",
+exit 4): sending there would type the text and the footer as shell commands.
+Use -- if the message itself starts with a flag: hcx send Vrax -- "--wait".`;
 
 /**
  * `<hc send flags...> <tab-name|tNN> <text...>`. Flags are accepted before the target
  * and before the text; once the text starts, every remaining argument is text.
- * `--no-footer` (alias `--raw`) sends the text exactly as given. `-h`/`--help` are not
- * parsed here: `send` intercepts them (a text starting with `--` still works after an
- * explicit `--`).
+ * `--no-footer` (alias `--raw`) sends the text exactly as given; `--agent-only`
+ * refuses shells and unknown kinds before sending. Both are hcx's own, never hc's.
+ * `-h`/`--help` are not parsed here: `send` intercepts them (a text starting with
+ * `--` still works after an explicit `--`).
  */
 export function parseSend(args: string[]): SendPlan {
   const flags: string[] = [];
   let target: string | undefined;
   let raw = false;
+  let agentOnly = false;
   let i = 0;
 
   while (i < args.length) {
@@ -270,6 +313,11 @@ export function parseSend(args: string[]): SendPlan {
     }
     if (SEND_RAW_FLAGS.has(arg)) {
       raw = true;
+      i++;
+      continue;
+    }
+    if (arg === "--agent-only") {
+      agentOnly = true;
       i++;
       continue;
     }
@@ -301,7 +349,7 @@ export function parseSend(args: string[]): SendPlan {
   if (!target) throw new HcxError(SEND_USAGE, { kind: "usage" });
   const text = args.slice(i).join(" ");
   if (!text) throw new HcxError(SEND_USAGE, { kind: "usage" });
-  return { target, text, flags, raw };
+  return { target, text, flags, raw, agentOnly };
 }
 
 /** How a message reached its target: `hcx` untagged, `hcx-raw` untagged as given. */

@@ -23,3 +23,8 @@ Every issue reported against `hcx` is logged here first, then worked. Newest las
 | 17 | 2026-10-31 | opus review | 0.1.5 | hcx errors do not follow hc's format or exit codes, and `spawn --json` omits the tab and session ids. | Fixed in 0.2.0 |
 | 18 | 2026-10-31 | opus review | 0.1.5 | Installer puts the token on the command line, `--from-source` needs node and installs `hcx.js`, plus smaller trap/version/latest issues. | Fixed in 0.2.0 |
 | 19 | 2026-10-31 | opus review | 0.1.5 | Test gaps (`run`, passthrough names, duplicate `--name`, unknown `--space`, auto-name polling, `herdr-app do` failure, twin names) and a confusing README line. | Fixed in 0.2.0 |
+| 20 | 2026-10-31 | owner review | 0.2.0 | `hcx send --no-footer` can type into a plain shell with no guard for callers; there is no flag that refuses shells and unknown kinds before sending. | Fixed in 0.3.0 |
+| 21 | 2026-10-31 | owner review | 0.2.0 | The shell refusal uses kind `usage`, so callers cannot tell it apart from bad flags; it needs its own kind and exit code. | Fixed in 0.3.0 |
+| 22 | 2026-10-31 | owner review | 0.2.0 | The `hc send` subprocess has no timeout, so a hung send blocks forever. | Fixed in 0.3.0 |
+| 23 | 2026-10-31 | owner review | 0.2.0 | Raw sends (`--no-footer`) to a terminal address still call `herdr-app ls` although no sender name or resolution is needed. | Fixed in 0.3.0 |
+| 24 | 2026-10-31 | owner review | 0.2.0 | No machine-readable version/capability check and the `send --json` fields are not a documented versioned interface. | Fixed in 0.3.0 |

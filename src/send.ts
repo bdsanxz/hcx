@@ -9,9 +9,10 @@ import {
   parseSend,
   resolveTarget,
   SEND_HELP,
+  sendTimeoutMs,
   withFooter,
 } from "./lib";
-import { runHc } from "./passthrough";
+import { isTimeoutError, runHc, sendTimeoutError } from "./passthrough";
 
 export function send(args: string[]): number {
   // `hcx send --help` is hcx's own help (hc's omits --no-footer and the footer).
@@ -27,8 +28,16 @@ export function send(args: string[]): number {
     return 0;
   }
 
+  const timeoutMs = sendTimeoutMs();
   const me = process.env.HC_TERMINAL_ID;
-  const herdr = me || !isAddress(plan.target) ? loadHerdr() : { ok: true as const, tabs: [], spaces: [] };
+  // A raw send to an address needs neither a sender name nor resolution, so it
+  // skips `herdr-app ls` entirely. Every other send loads Herdr when the sender
+  // or a name-like target needs it.
+  const skipHerdr = plan.raw && isAddress(plan.target);
+  const herdr =
+    skipHerdr || (!me && isAddress(plan.target))
+      ? { ok: true as const, tabs: [], spaces: [] }
+      : loadHerdr();
   if (!herdr.ok) {
     if (!plan.raw && me) {
       throw new HcxError(
@@ -40,17 +49,33 @@ export function send(args: string[]): number {
   const tabs = herdr.ok ? herdr.tabs : [];
   const address = resolveTarget(plan.target, tabs);
 
-  // Without --no-footer a plain shell is refused BEFORE sending: typing there would
-  // run the text and the footer as shell commands. If the kind lookup fails, behave
-  // as today. The same lookup feeds the delivery fields, so no extra subprocess.
+  // The kind is looked up BEFORE sending. Without --no-footer a plain shell is
+  // refused (typing there would run the text and footer as shell commands); with
+  // --agent-only a plain shell or an unknown kind is refused (also with
+  // --no-footer). If the kind lookup fails, behave as today, except --agent-only
+  // refuses the unknown kind. The same lookup feeds the delivery fields.
   let kind: string | null = null;
   let program: string | null = null;
-  if (!plan.raw) {
+  if (plan.agentOnly) {
     const found = effectiveKindAndProgram(loadAgents(), address);
     kind = found.kind;
     program = found.program;
     if (kind && isShellKind(kind)) {
-      throw new HcxError(`tab "${plan.target}" is a plain shell; use --no-footer to type a command`, { kind: "usage" });
+      throw new HcxError(`tab "${plan.target}" is a plain shell; refusing --agent-only send`, { kind: "plain_shell" });
+    }
+    if (!kind) {
+      throw new HcxError(`tab "${plan.target}" is not a known agent; refusing --agent-only send`, {
+        kind: "plain_shell",
+      });
+    }
+  } else if (!plan.raw) {
+    const found = effectiveKindAndProgram(loadAgents(), address);
+    kind = found.kind;
+    program = found.program;
+    if (kind && isShellKind(kind)) {
+      throw new HcxError(`tab "${plan.target}" is a plain shell; use --no-footer to type a command`, {
+        kind: "plain_shell",
+      });
     }
   }
 
@@ -62,13 +87,18 @@ export function send(args: string[]): number {
 
   // hc prints JSON with --json, and by default when its stdout is piped. Only then can
   // the delivery fields join the result; in a terminal the human line stays hc's own.
+  // The send itself is killed after the send timeout (--timeout stays hc's own wait
+  // timeout and is passed through). A killed send may still have landed: never retry.
   if (!plan.flags.includes("--json") && process.stdout.isTTY) {
-    return runHc(invocation, env);
+    return runHc(invocation, env, timeoutMs);
   }
 
   const flags = plan.flags.includes("--json") ? plan.flags : [...plan.flags, "--json"];
-  const p = spawnSync("hc", ["send", ...flags, "--", address, text], { env, encoding: "utf8" });
-  if (p.error) throw p.error;
+  const p = spawnSync("hc", ["send", ...flags, "--", address, text], { env, encoding: "utf8", timeout: timeoutMs });
+  if (p.error) {
+    if (isTimeoutError(p.error)) throw sendTimeoutError(timeoutMs);
+    throw p.error;
+  }
   if (p.stderr) process.stderr.write(p.stderr);
   const result = parseSendResult(p.stdout);
   if (p.status !== 0 || !result) {
@@ -77,7 +107,7 @@ export function send(args: string[]): number {
     return p.status ?? 1;
   }
   const route = plan.raw ? "hcx-raw" : "hcx";
-  if (plan.raw) {
+  if (plan.raw && !plan.agentOnly) {
     // Nothing changed for --no-footer: the kind is still looked up once for the fields.
     const found = effectiveKindAndProgram(loadAgents(), address);
     kind = found.kind;

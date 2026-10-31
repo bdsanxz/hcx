@@ -1,6 +1,7 @@
+import { spawnSync } from "node:child_process";
 import { done } from "./done";
 import { loadTabs } from "./herdr";
-import { HcxError, needsTabLookup, resolveArgs, runArgs } from "./lib";
+import { CAPABILITIES, CONTRACT_VERSION, HcxError, needsTabLookup, resolveArgs, runArgs } from "./lib";
 import { runHc } from "./passthrough";
 import { send } from "./send";
 import { spawn } from "./spawn";
@@ -8,9 +9,10 @@ import { VERSION } from "./version";
 
 const USAGE = `hcx — helper over hc for Herdr
 
-  hcx send [--wait] [--force] [--json] [--if idle|working] [--timeout SECONDS] [--no-footer] <tab-name|tNN> "text"
+  hcx send [--wait] [--force] [--json] [--if idle|working] [--timeout SECONDS] [--no-footer] [--agent-only] <tab-name|tNN> "text"
                                      send without the <hc from> tag, with a sender footer
                                      --no-footer (alias --raw): the text exactly as given
+                                     --agent-only: refuse a plain shell or unknown kind
                                      hcx send --help prints this help, not hc's
   hcx spawn <muse|pi|claude|opencode> [--name N] [--space S] [--folder DIR] [--task TEXT] [--json] [agent flags...]
                                      start the agent in a tab of its own (no parent terminal)
@@ -24,7 +26,8 @@ first terminal). Twin names are refused; addresses and numeric names pass throug
 
 Every other hc command is passed through unchanged, with its output, errors and exit
 code: hcx ls --json, hcx read Vrax, hcx command...
-hcx --version prints hcx's version, then hc's.
+hcx --version prints hcx's version, then hc's. hcx --version --json prints the
+machine contract: {"hcx","hc","contract","capabilities"}.
 
   hcx spawn muse --yolo
   hcx spawn opencode --model provider/model --variant high
@@ -38,6 +41,10 @@ try {
     console.log(USAGE);
     process.exit(0);
   } else if (command === "--version" || command === "-V") {
+    if (args.includes("--json")) {
+      console.log(JSON.stringify({ hcx: VERSION, hc: hcVersion(command), contract: CONTRACT_VERSION, capabilities: CAPABILITIES }));
+      process.exit(0);
+    }
     console.log(`hcx ${VERSION}`);
     process.exit(runHc([command]));
   } else if (command === "send") {
@@ -54,6 +61,22 @@ try {
   }
 } catch (e) {
   process.exit(reportError(e, args));
+}
+
+/**
+ * The hc version for the machine contract, parsed from `hc --version` ("hc X.Y.Z").
+ * Throws when hc cannot answer, like the text `hcx --version` path.
+ */
+function hcVersion(flag: string): string {
+  const p = spawnSync("hc", [flag], { encoding: "utf8", timeout: 5000 });
+  if (p.error) throw p.error;
+  if (p.status !== 0) {
+    const detail = (p.stderr || "").trim();
+    throw new HcxError(detail ? `hc ${flag} failed: ${detail}` : `hc ${flag} failed (exit ${p.status})`);
+  }
+  const raw = (p.stdout || "").trim();
+  const withoutPrefix = raw.startsWith("hc ") ? raw.slice(3).trim() : raw;
+  return withoutPrefix.split(/\s+/)[0] || "unknown";
 }
 
 /**

@@ -14,6 +14,11 @@ appendFileSync(
 );
 
 function answer(name: string): number {
+  const delayFile = join(dir, `${name}.delay`);
+  if (existsSync(delayFile)) {
+    const ms = Number(readFileSync(delayFile, "utf8").trim());
+    if (Number.isFinite(ms) && ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.floor(ms));
+  }
   const out = join(dir, `${name}.out`);
   const err = join(dir, `${name}.err`);
   const code = join(dir, `${name}.exit`);

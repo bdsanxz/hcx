@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { formatTimeout, HcxError } from "./lib";
 
 /** Signal name → number, for the 128+n exit convention. */
 const SIGNAL_NUMBERS: Record<string, number> = {
@@ -35,10 +36,30 @@ const SIGNAL_NUMBERS: Record<string, number> = {
   SIGSYS: 31,
 };
 
+/** Whether a spawnSync failure is the timeout firing (the child was killed). */
+export function isTimeoutError(e: unknown): boolean {
+  if (!e || typeof e !== "object") return false;
+  const code = (e as { code?: unknown }).code;
+  if (code === "ETIMEDOUT") return true;
+  const message = (e as { message?: unknown }).message;
+  return typeof message === "string" && /ETIMEDOUT|timed out/i.test(message);
+}
+
+/** The timeout error for a killed `hc send`: the message may have landed, never retry. */
+export function sendTimeoutError(timeoutMs: number): HcxError {
+  return new HcxError(
+    `hc send timed out after ${formatTimeout(timeoutMs)}; the message may have landed, do not retry automatically`,
+    { kind: "timeout", hint: "read before resending; never retry a timed-out send blindly" },
+  );
+}
+
 /** Runs `hc` with this process's stdio and returns its exit code (128+n on a signal). */
-export function runHc(args: string[], env: NodeJS.ProcessEnv = process.env): number {
-  const p = spawnSync("hc", args, { env, stdio: "inherit" });
-  if (p.error) throw p.error;
+export function runHc(args: string[], env: NodeJS.ProcessEnv = process.env, timeoutMs?: number): number {
+  const p = spawnSync("hc", args, { env, stdio: "inherit", ...(timeoutMs !== undefined ? { timeout: timeoutMs } : {}) });
+  if (p.error) {
+    if (timeoutMs !== undefined && isTimeoutError(p.error)) throw sendTimeoutError(timeoutMs);
+    throw p.error;
+  }
   if (p.signal) return 128 + (SIGNAL_NUMBERS[p.signal] ?? 0);
   return p.status ?? 1;
 }

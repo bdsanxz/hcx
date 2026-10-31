@@ -68,7 +68,7 @@ agent terminal (or its first terminal when it has no agent).
 ## `hcx send`
 
 ```sh
-hcx send [--wait] [--force] [--json] [--if idle|working] [--timeout SECONDS] [--no-footer] <tab-name|tNN> "text"
+hcx send [--wait] [--force] [--json] [--if idle|working] [--timeout SECONDS] [--no-footer] [--agent-only] <tab-name|tNN> "text"
 ```
 
 Send a message to another terminal **without the `<hc from="…">` tag**, by tab name,
@@ -83,21 +83,33 @@ with a footer that names the sender.
   always resolves.
 - `hcx send --help` (and `hcx send <tab> --help`) prints hcx's own send help, not
   hc's. A text of `--help` still sends after an explicit `--`.
-- Without `--no-footer` a plain shell is refused before anything is typed:
+- Without `--no-footer` a plain shell is refused before anything is typed
+  (kind `plain_shell`, exit 4):
   `tab "Shell" is a plain shell; use --no-footer to type a command`. Sending there
   would run the text and the footer as shell commands.
+- `--agent-only` looks the target kind up first — also with `--no-footer` — and
+  refuses a plain shell or an unknown kind before anything is sent
+  (kind `plain_shell`, exit 4). It combines with the other flags:
+  `hcx send --agent-only --json --if idle Vrax "check this"`.
 - `hc send` flags go before the text: `--wait`, `--force`, `--json`, `--if <status>`,
-  `--timeout <seconds>`. `hc` always sees `--` before the target and the text, so a
+  `--timeout <seconds>`. `--timeout` is hc's own wait timeout and is passed through;
+  the `hc send` call itself is killed after 30 s (kind `timeout`: the message may have
+  landed, never retry). `hc` always sees `--` before the target and the text, so a
   text starting with `-` works: `hcx send Vrax -- "- item"`, and a text starting with
   `--` works after an explicit `--`: `hcx send Vrax -- "--wait"`.
 - `--no-footer` (alias `--raw`) sends the text **exactly as given**: no footer and no
   tag. It works for every target, including a plain shell or an opencode TUI, and
   combines with the other flags: `hcx send --no-footer --if idle Vrax "echo hi"`.
+  A raw send to a terminal address (`t7`) skips `herdr-app ls`: no sender name or
+  resolution is needed.
 
-### Delivery status
+### Delivery status (contract 1, versioned)
 
-When hc prints JSON — with `--json`, or by default when stdout is piped — `hcx send`
-adds fields next to hc's own and keeps hc's fields and exit code as they are:
+`hcx send --json` is a versioned machine interface (contract 1; see
+`hcx --version --json`). When hc prints JSON — with `--json`, or by default when
+stdout is piped — `hcx send` adds fields next to hc's own and keeps hc's fields
+(`status`, `turn`, `started`, …) and exit code as they are. The added fields are
+stable within contract 1; new optional fields may be added, none removed:
 
 - `delivered`: `true` when the target confirmed, `false` when it confirmed but
   started no turn (`started: false` — see below), `null` when it reports no status,
@@ -217,13 +229,32 @@ command is passed straight to `hc` with inherited stdio, so output, stderr and e
 code are `hc`'s own — including unknown commands (`hcx command-unknown` shows hc's
 error) and `hcx --licenses`, `hcx ls --json`.
 
+## Machine contract
+
+`hcx --version --json` prints one object for callers to gate on:
+
+```sh
+hcx --version --json
+{"hcx":"0.3.0","hc":"0.1.15","contract":1,"capabilities":["no-footer","agent-only","json-delivery"]}
+```
+
+`contract` is 1 for this interface; `capabilities` lists what this hcx supports:
+`no-footer` (raw sends), `agent-only` (the `--agent-only` guard), `json-delivery`
+(the `send --json` fields). Callers should check `contract` and the capability they
+need before using a flag an older hcx would read as text. The `send --json` fields
+(`delivered`, `route`, `agent`, `program?`, `note?` next to hc's own fields) are part
+of the same contract and stable within contract 1.
+
 ## Errors
 
 hcx's own errors follow hc's shape: with `--json`, or whenever stderr is piped,
 they print `{"error":{"kind","message","hint"}}` on stderr; in a terminal the human
 `hcx: <message>` line stays. Kinds are `ambiguous` (a twin tab or space name),
-`usage` (bad flags or targets) and `not_found` (an unknown space), else `error`.
-Exit codes are 2 for usage, 3 for not_found, 1 otherwise.
+`usage` (bad flags or targets), `not_found` (an unknown space), `plain_shell`
+(a refused shell or, with `--agent-only`, an unknown kind) and `timeout`
+(a killed `hc send`: the message may have landed, never retry), else `error`.
+Exit codes are 2 for usage, 3 for not_found, 4 for plain_shell, 1 otherwise.
+`plain_shell`, `timeout` and the exit codes are stable for callers.
 
 ## Build
 
